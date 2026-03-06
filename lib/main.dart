@@ -26,6 +26,7 @@ const MethodChannel _overlayChannel      = MethodChannel('overlay');
 const MethodChannel _captureChannel      = MethodChannel('screen_capture');
 const MethodChannel _callStateChannel    = MethodChannel('call_state');
 const MethodChannel _notificationChannel = MethodChannel('notification_reader');
+const MethodChannel _shareChannel        = MethodChannel('share_intent');
 
 Future<void> _startOverlay()             async { try { await _overlayChannel.invokeMethod('startOverlay'); }             catch (e) { debugPrint('❌ [OVERLAY] $e'); } }
 Future<void> _stopOverlay()              async { try { await _overlayChannel.invokeMethod('stopOverlay'); }              catch (e) { debugPrint('❌ [OVERLAY] $e'); } }
@@ -1025,9 +1026,9 @@ class ProbabilityMeter extends StatelessWidget {
           child: LinearProgressIndicator(value: probability / 100, backgroundColor: Colors.white12, valueColor: AlwaysStoppedAnimation<Color>(color), minHeight: 16)),
       const SizedBox(height: 6),
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        Text(L.t('safe_label'),     style: const TextStyle(fontSize: 10, color: _C.safe)),
-        const Text('Suspicious',    style: TextStyle(fontSize: 10, color: _C.suspicious)),
-        Text(L.t('high_risk_label'),  style: const TextStyle(fontSize: 10, color: _C.highRisk)),
+        Text(L.t('safe_label'),     style: TextStyle(fontSize: 10, color: _C.safe)),
+        Text('Suspicious',    style: TextStyle(fontSize: 10, color: _C.suspicious)),
+        Text(L.t('high_risk_label'),  style: TextStyle(fontSize: 10, color: _C.highRisk)),
       ]),
     ]);
   }
@@ -1320,6 +1321,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _loadNotificationState();
     _initCallChannel();
     _initNotificationListener();
+    _initShareChannel();
 
     _captureChannel.setMethodCallHandler((call) async {
       if (call.method == 'onScreenCaptured' && mounted) {
@@ -1421,6 +1423,38 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     OcrService.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  // ── Share intent channel ──────────────────────────────────────
+  // Android calls onSharedFile with: path, mimeType, fileName, text
+  // We route to SharedFileAnalyzer which handles Stages 3-5.
+
+  void _initShareChannel() {
+    _shareChannel.setMethodCallHandler((call) async {
+      if (call.method != 'onSharedFile') return;
+      final args     = call.arguments as Map;
+      final path     = args['path']     as String? ?? '';
+      final mimeType = args['mimeType'] as String? ?? '';
+      final fileName = args['fileName'] as String? ?? '';
+      final text     = args['text']     as String? ?? '';
+
+      debugPrint('📤 [SHARE] path=$path  mime=$mimeType  fileName=$fileName');
+
+      if (!mounted) return;
+
+      // Navigate to analysis screen — it handles extraction + result display
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => SharedFileAnalysisScreen(
+            path:     path,
+            mimeType: mimeType,
+            fileName: fileName,
+            sharedText: text,
+          ),
+        ),
+      );
+    });
   }
 
   // ── Call channel ──────────────────────────────────────────────
@@ -2102,6 +2136,538 @@ class _CropScreenState extends State<CropScreen> {
 // HISTORY SCREEN
 // ══════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════
+// SHARED FILE ANALYZER — Stages 3-5
+// Detects file type → extracts content → runs scam analysis
+// ══════════════════════════════════════════════════════════════
+
+/// Stage 2: classify a MIME type or extension into a handler category.
+enum SharedFileType { image, audio, pdf, apk, text, unknown }
+
+class SharedFileAnalyzer {
+  // ── Stage 2: File type detection ──────────────────────────────
+  static SharedFileType detect(String mimeType, String path) {
+    final m = mimeType.toLowerCase();
+    final ext = path.split('.').last.toLowerCase();
+
+    if (m.startsWith('image/') || ['jpg','jpeg','png','webp','bmp','gif'].contains(ext))
+      return SharedFileType.image;
+    if (m.startsWith('audio/') || ['ogg','mp3','m4a','wav','aac','opus','flac'].contains(ext))
+      return SharedFileType.audio;
+    if (m == 'application/pdf' || ext == 'pdf')
+      return SharedFileType.pdf;
+    if (m == 'application/vnd.android.package-archive' || ext == 'apk')
+      return SharedFileType.apk;
+    if (m == 'text/plain' || ext == 'txt')
+      return SharedFileType.text;
+    return SharedFileType.unknown;
+  }
+
+  // ── Stage 3: Content extraction ───────────────────────────────
+
+  /// Image: run existing OCR pipeline.
+  static Future<String> extractFromImage(String path) async {
+    try {
+      return await OcrService.extractFromPath(path);
+    } catch (e) {
+      debugPrint('❌ [SHARE-OCR] $e');
+      return '';
+    }
+  }
+
+  /// PDF: extract raw text using pdfx package byte reading, fallback to
+  /// path-based OCR on the first page render if pdfx is unavailable.
+  static Future<String> extractFromPdf(String path) async {
+    try {
+      // Try reading as raw bytes and extracting printable ASCII / unicode text.
+      // This catches text-layer PDFs (forms, bank statements, etc.)
+      final bytes = await File(path).readAsBytes();
+      final raw   = String.fromCharCodes(
+          bytes.where((b) => (b >= 32 && b < 127) || b > 160)
+      );
+
+      // Extract strings between BT...ET markers (PDF text blocks)
+      final buf = StringBuffer();
+      final matches = RegExp(r'BT(.*?)ET', dotAll: true).allMatches(raw);
+      for (final m in matches) {
+        final block = m.group(1) ?? '';
+        // Extract parenthesised strings: (Hello World)
+        for (final s in RegExp(r'\(([^)]{2,})\)').allMatches(block)) {
+          final txt = s.group(1)?.trim() ?? '';
+          if (txt.isNotEmpty) buf.writeln(txt);
+        }
+      }
+
+      // Also scan for raw URLs in the byte stream
+      final urls = RegExp(r'https?://\S+').allMatches(raw);
+      for (final u in urls) buf.writeln(u.group(0));
+
+      final result = buf.toString().trim();
+      if (result.length > 200) return result.substring(0, _kOcrMaxChars);
+      return result;
+    } catch (e) {
+      debugPrint('❌ [SHARE-PDF] $e');
+      return '';
+    }
+  }
+
+  /// APK: extract package name + permissions from the ZIP/manifest.
+  /// Returns a structured description for the AI to analyze.
+  static Future<String> extractFromApk(String path) async {
+    try {
+      final file    = File(path);
+      final size    = await file.length();
+      final sizeMb  = (size / 1024 / 1024).toStringAsFixed(1);
+      final name    = path.split('/').last;
+
+      // Read the first 64 KB to look for readable strings (package names, URLs)
+      final bytes  = await file.openRead(0, 65536).expand((b) => b).toList();
+      final raw    = String.fromCharCodes(bytes.where((b) => b >= 32 && b < 127));
+      final urls   = RegExp(r'https?://\S+').allMatches(raw).map((m) => m.group(0)!).toSet();
+      final perms  = RegExp(r'android\.permission\.\w+').allMatches(raw).map((m) => m.group(0)!).toSet();
+
+      final buf = StringBuffer();
+      buf.writeln('APK FILE RECEIVED: $name ($sizeMb MB)');
+      if (urls.isNotEmpty) {
+        buf.writeln('\nURLs found inside APK:');
+        for (final u in urls.take(10)) buf.writeln('  $u');
+      }
+      if (perms.isNotEmpty) {
+        buf.writeln('\nPermissions declared:');
+        for (final p in perms.take(20)) buf.writeln('  $p');
+      }
+      buf.writeln('\nNote: APK files shared via WhatsApp are often malware or cloned banking apps.');
+      return buf.toString().trim();
+    } catch (e) {
+      debugPrint('❌ [SHARE-APK] $e');
+      return 'APK file received. Could not parse contents.';
+    }
+  }
+
+  /// Audio: speech-to-text via Android's SpeechRecognizer is not feasible
+  /// offline, so we describe the file and flag it for manual review.
+  /// When a real STT service is integrated later, swap this method out.
+  static Future<String> extractFromAudio(String path) async {
+
+    try {
+
+      var uri = Uri.parse("https://panels-afterwards-psychological-california.trycloudflare.com/transcribe");
+
+      var request = http.MultipartRequest("POST", uri);
+
+      request.files.add(
+          await http.MultipartFile.fromPath("audio", path)
+      );
+
+      var response = await request.send();
+
+      var body = await response.stream.bytesToString();
+
+      var data = jsonDecode(body);
+
+      debugPrint("VOICE TEXT: $data['text']");
+
+      return data["text"];
+
+    } catch (e) {
+
+      debugPrint("Whisper error: $e");
+
+      return "";
+    }
+
+  }
+
+  // ── Stage 5: Link extraction ───────────────────────────────────
+  static List<String> extractLinks(String text) {
+    return RegExp(r'https?://\S+').allMatches(text).map((m) => m.group(0)!).toList();
+  }
+
+  // ── Stage 4+6: Run full scam detection on extracted text ──────
+  static Future<ScanResult> analyze(String extractedText, SharedFileType type) async {
+    if (extractedText.trim().isEmpty) {
+      return ScanResult(
+        scamProbability: 0, isScam: false, riskLevel: RiskLevel.safe,
+        fraudType: FraudType.none,
+        suspiciousKeywords: [], explanation: 'No text could be extracted.',
+        preventionTips: [L.t('tip_link')], whatToDo: L.t('wtd_safe'),
+        helpline: '', originalText: '', timestamp: DateTime.now(),
+      );
+    }
+
+    // Instant scam check (same as notification filter)
+    if (_NotifFilter.isInstantScam(extractedText)) {
+      return ScanResult(
+        scamProbability: 92, isScam: true, riskLevel: RiskLevel.highRisk,
+        fraudType: FraudType.phishing,
+        suspiciousKeywords: ['suspicious link', 'instant scam pattern'],
+        explanation: 'Instant scam pattern detected in file content.',
+        preventionTips: [L.t('tip_link'), L.t('tip_otp')],
+        whatToDo: L.t('wtd_high'),
+        helpline: '1930', originalText: extractedText, timestamp: DateTime.now(),
+      );
+    }
+
+    // APK files are always flagged high-risk
+    if (type == SharedFileType.apk) {
+      return ScanResult(
+        scamProbability: 85, isScam: true, riskLevel: RiskLevel.highRisk,
+        fraudType: FraudType.other,
+        suspiciousKeywords: ['apk', 'unknown app'],
+        explanation: 'APK files shared via WhatsApp are very often malware '
+            'or fake versions of banking apps designed to steal your credentials.',
+        preventionTips: [L.t('tip_link'), L.t('tip_otp')],
+        whatToDo: L.t('wtd_high'),
+        helpline: '1930', originalText: extractedText, timestamp: DateTime.now(),
+      );
+    }
+
+    // AI + local engine analysis (same pipeline as text scan)
+    try {
+      return await ApiService.analyze(extractedText);
+    } catch (_) {
+      return _LocalEngine.detect(extractedText);
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// SHARED FILE ANALYSIS SCREEN — Stage 7: Show result
+// Full-screen flow: extracting → analyzing → show ScanResult
+// ══════════════════════════════════════════════════════════════
+
+class SharedFileAnalysisScreen extends StatefulWidget {
+  final String path;
+  final String mimeType;
+  final String fileName;
+  final String sharedText;
+
+  const SharedFileAnalysisScreen({
+    super.key,
+    required this.path,
+    required this.mimeType,
+    required this.fileName,
+    required this.sharedText,
+  });
+
+  @override
+  State<SharedFileAnalysisScreen> createState() => _SharedFileAnalysisScreenState();
+}
+
+class _SharedFileAnalysisScreenState extends State<SharedFileAnalysisScreen>
+    with SingleTickerProviderStateMixin {
+
+  late AnimationController _spinCtrl;
+  String  _status  = '';
+  bool    _done    = false;
+  ScanResult? _result;
+  SharedFileType _fileType = SharedFileType.unknown;
+  List<String> _links = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _spinCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 2))
+      ..repeat();
+    _run();
+  }
+
+  @override
+  void dispose() {
+    _spinCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run() async {
+    // ── Stage 2: detect file type ──────────────────────────────
+    _fileType = SharedFileAnalyzer.detect(widget.mimeType, widget.path);
+    _setStatus(_fileTypeLabel(_fileType));
+
+    // ── Stage 3: extract content ───────────────────────────────
+    String extracted = '';
+
+    if (widget.sharedText.isNotEmpty) {
+      // Direct text share (forwarded message)
+      extracted = widget.sharedText;
+      _setStatus('Analyzing text…');
+    } else {
+      switch (_fileType) {
+        case SharedFileType.image:
+          _setStatus('Reading image with OCR…');
+          extracted = await SharedFileAnalyzer.extractFromImage(widget.path);
+        case SharedFileType.pdf:
+          _setStatus('Extracting PDF text…');
+          extracted = await SharedFileAnalyzer.extractFromPdf(widget.path);
+        case SharedFileType.apk:
+          _setStatus('Scanning APK…');
+          extracted = await SharedFileAnalyzer.extractFromApk(widget.path);
+        case SharedFileType.audio:
+          _setStatus('Reading audio file…');
+          extracted = await SharedFileAnalyzer.extractFromAudio(widget.path);
+        case SharedFileType.text:
+          _setStatus('Reading text file…');
+          try { extracted = await File(widget.path).readAsString(); } catch (_) {}
+        case SharedFileType.unknown:
+          _setStatus('Checking file…');
+          extracted = 'Unknown file type: ${widget.mimeType}\nFile: ${widget.fileName}';
+      }
+    }
+
+    // ── Stage 5: extract links ─────────────────────────────────
+    _links = SharedFileAnalyzer.extractLinks(extracted);
+
+    // ── Stage 4+6: scam analysis ───────────────────────────────
+    _setStatus('AI scam analysis…');
+    final result = await SharedFileAnalyzer.analyze(extracted, _fileType);
+
+    // ── Stage 8: save to history ───────────────────────────────
+    await HistoryService.save(result);
+
+    if (mounted) setState(() { _result = result; _done = true; });
+  }
+
+  void _setStatus(String s) {
+    if (mounted) setState(() => _status = s);
+  }
+
+  String _fileTypeLabel(SharedFileType t) => switch (t) {
+    SharedFileType.image   => 'Image detected…',
+    SharedFileType.audio   => 'Voice message detected…',
+    SharedFileType.pdf     => 'PDF document detected…',
+    SharedFileType.apk     => '⚠️ APK file detected…',
+    SharedFileType.text    => 'Text file detected…',
+    SharedFileType.unknown => 'File received…',
+  };
+
+  String _fileTypeIcon(SharedFileType t) => switch (t) {
+    SharedFileType.image   => '🖼️',
+    SharedFileType.audio   => '🎙️',
+    SharedFileType.pdf     => '📄',
+    SharedFileType.apk     => '📦',
+    SharedFileType.text    => '💬',
+    SharedFileType.unknown => '📎',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0d0d1a),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF1a1a2e),
+        title: Row(children: [
+          Text(_fileTypeIcon(_fileType), style: const TextStyle(fontSize: 22)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              widget.fileName.isNotEmpty ? widget.fileName : 'Shared File',
+              style: const TextStyle(fontSize: 15, color: Colors.white),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ]),
+        leading: IconButton(
+          icon: const Icon(Icons.close, color: Colors.white),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: _done ? _buildResult() : _buildLoading(),
+    );
+  }
+
+  // ── Loading state ─────────────────────────────────────────────
+  Widget _buildLoading() {
+    return Center(
+      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        RotationTransition(
+          turns: _spinCtrl,
+          child: Container(
+            width: 72, height: 72,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                colors: [Colors.deepPurple.shade400, Colors.blue.shade400],
+              ),
+            ),
+            child: const Icon(Icons.shield_rounded, color: Colors.white, size: 36),
+          ),
+        ),
+        const SizedBox(height: 28),
+        Text(_fileTypeIcon(_fileType), style: const TextStyle(fontSize: 48)),
+        const SizedBox(height: 16),
+        Text(
+          _status,
+          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'ScamShield is analyzing the file…',
+          style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 13),
+        ),
+      ]),
+    );
+  }
+
+  // ── Result state ──────────────────────────────────────────────
+  Widget _buildResult() {
+    final r = _result!;
+    final isScam = r.riskLevel == RiskLevel.highRisk || r.riskLevel == RiskLevel.suspicious;
+    final color  = r.riskLevel == RiskLevel.highRisk  ? _C.highRisk
+        : r.riskLevel == RiskLevel.suspicious ? _C.suspicious
+        : _C.safe;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+
+        // ── Verdict card ─────────────────────────────────────────
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: color.withOpacity(0.5), width: 2),
+          ),
+          child: Column(children: [
+            Text(
+              r.riskLevel == RiskLevel.highRisk   ? L.t('scam_found')
+                  : r.riskLevel == RiskLevel.suspicious ? L.t('susp_found')
+                  : L.t('safe_found'),
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: color),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            // Probability bar
+            ProbabilityMeter(
+              probability: r.scamProbability,
+              riskLevel: r.riskLevel,
+            ),
+            const SizedBox(height: 12),
+            // File type badge
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Text(_fileTypeIcon(_fileType), style: const TextStyle(fontSize: 16)),
+                const SizedBox(width: 6),
+                Text(
+                  _fileTypeName(_fileType),
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+              ]),
+            ),
+          ]),
+        ),
+
+        const SizedBox(height: 16),
+
+        // ── Links found ──────────────────────────────────────────
+        if (_links.isNotEmpty) ...[
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.orange.withOpacity(0.10),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.orange.withOpacity(0.4)),
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Row(children: [
+                Icon(Icons.link_rounded, color: Colors.orange, size: 18),
+                SizedBox(width: 8),
+                Text('Links found in file', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 14)),
+              ]),
+              const SizedBox(height: 8),
+              ..._links.take(5).map((url) => Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  url,
+                  style: TextStyle(
+                    color: _NotifFilter.isInstantScam(url) ? Colors.redAccent : Colors.white70,
+                    fontSize: 12, fontFamily: 'monospace',
+                  ),
+                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                ),
+              )),
+            ]),
+          ),
+          const SizedBox(height: 16),
+        ],
+
+        // ── What to do ───────────────────────────────────────────
+        WhatToDoWidget(
+          action: r.whatToDo,
+          riskLevel: r.riskLevel,
+        ),
+        const SizedBox(height: 16),
+
+        // ── Prevention tips ──────────────────────────────────────
+        PreventionTipsWidget(tips: r.preventionTips),
+        const SizedBox(height: 16),
+
+        // ── Helpline ─────────────────────────────────────────────
+        if (isScam) ...[
+          _CybercrimeHelplineBanner(result: r),
+          const SizedBox(height: 16),
+        ],
+
+        // ── Action buttons ───────────────────────────────────────
+        Row(children: [
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.check_rounded, size: 18),
+              label: Text(L.t('dismiss')),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: BorderSide(color: Colors.white24),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
+          if (isScam) ...[
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: () async {
+                  final uri = Uri.parse('tel:1930');
+                  if (await canLaunchUrl(uri)) launchUrl(uri);
+                },
+                icon: const Icon(Icons.phone_rounded, size: 18),
+                label: Text(L.t('call_1930')),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _C.highRisk,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+          ],
+        ]),
+
+        const SizedBox(height: 30),
+      ]),
+    );
+  }
+
+  String _fileTypeName(SharedFileType t) => switch (t) {
+    SharedFileType.image   => 'Image / Screenshot',
+    SharedFileType.audio   => 'Voice Message',
+    SharedFileType.pdf     => 'PDF Document',
+    SharedFileType.apk     => 'APK / App File',
+    SharedFileType.text    => 'Text Message',
+    SharedFileType.unknown => 'Unknown File',
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// HISTORY SCREEN
+// ══════════════════════════════════════════════════════════════
+
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
   @override State<HistoryScreen> createState() => _HistoryScreenState();
@@ -2155,7 +2721,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         const Icon(Icons.history_rounded, size: 64, color: Colors.grey), const SizedBox(height: 16),
         Text(L.t('history_empty'), style: const TextStyle(color: Colors.grey, fontSize: 16)),
         const SizedBox(height: 6),
-        Text(L.t('history_hint'), style: const TextStyle(color: Colors.grey, fontSize: 13)),
+        Text(L.t('history_hint'), style: TextStyle(color: Colors.grey, fontSize: 13)),
       ]))
           : Column(children: [
         if (highCount > 0)

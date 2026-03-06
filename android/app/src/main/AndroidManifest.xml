@@ -9,27 +9,25 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
 
+    <!-- ── Android 13+ runtime notification permission ──────────────────── -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
     <!-- ── Screen capture ────────────────────────────────────────────── -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+
+    <!-- ── Media access for Android 13+ (shared files) ─────────────────── -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
 
     <!-- ── Call detection (incoming number) ──────────────────────────── -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
     <uses-permission android:name="android.permission.READ_CALL_LOG"/>
 
     <!-- ── Dial button inside overlays ───────────────────────────────── -->
-    <uses-permission android:name="android.permission.CALL_PHONE"/>
 
     <!-- ── Contacts (skip known callers) ─────────────────────────────── -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
-
-    <!-- ── Notification listener (reads WhatsApp/SMS/Email content) ──── -->
-    <!-- NOTE: the BIND_NOTIFICATION_LISTENER_SERVICE permission is        -->
-    <!-- automatically granted when the user enables the service in        -->
-    <!-- Settings › Notification access.  No runtime request needed.      -->
-    <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
-        tools:ignore="ProtectedPermissions"
-        xmlns:tools="http://schemas.android.com/tools"/>
 
     <application
         android:label="scamshield"
@@ -56,6 +54,46 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- ── Receive single file shared from WhatsApp / any app ── -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <!-- Images (screenshots, photos) -->
+                <data android:mimeType="image/*"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <!-- Audio (WhatsApp voice notes: .ogg, .m4a, .mp3) -->
+                <data android:mimeType="audio/*"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <!-- Documents / PDFs -->
+                <data android:mimeType="application/pdf"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <!-- APKs shared as potential malware -->
+                <data android:mimeType="application/vnd.android.package-archive"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <!-- Plain text (forwarded messages, links) -->
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+
+            <!-- ── Receive multiple files at once ────────────────────── -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="image/*"/>
+            </intent-filter>
+
         </activity>
 
         <!-- ── UCrop image-cropping activity ───────────────────────── -->
@@ -70,8 +108,7 @@
         <service
             android:name=".OverlayService"
             android:foregroundServiceType="dataSync"
-            android:exported="false"
-            android:enabled="true"/>
+            android:exported="false"/>
 
         <!-- ── Screen capture service ──────────────────────────────── -->
         <service
@@ -150,6 +187,7 @@
             <data android:scheme="whatsapp"/>
         </intent>
         <package android:name="com.whatsapp"/>
+        <package android:name="com.whatsapp.w4b"/>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>

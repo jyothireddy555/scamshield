@@ -1,0 +1,159 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ── Core ──────────────────────────────────────────────────────── -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+
+    <!-- ── Foreground services ───────────────────────────────────────── -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+
+    <!-- ── Screen capture ────────────────────────────────────────────── -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+
+    <!-- ── Call detection (incoming number) ──────────────────────────── -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
+    <uses-permission android:name="android.permission.READ_CALL_LOG"/>
+
+    <!-- ── Dial button inside overlays ───────────────────────────────── -->
+    <uses-permission android:name="android.permission.CALL_PHONE"/>
+
+    <!-- ── Contacts (skip known callers) ─────────────────────────────── -->
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
+
+    <!-- ── Notification listener (reads WhatsApp/SMS/Email content) ──── -->
+    <!-- NOTE: the BIND_NOTIFICATION_LISTENER_SERVICE permission is        -->
+    <!-- automatically granted when the user enables the service in        -->
+    <!-- Settings › Notification access.  No runtime request needed.      -->
+    <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+        tools:ignore="ProtectedPermissions"
+        xmlns:tools="http://schemas.android.com/tools"/>
+
+    <application
+        android:label="scamshield"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
+
+        <!-- ── Main Flutter Activity ───────────────────────────────── -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme"/>
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <!-- ── UCrop image-cropping activity ───────────────────────── -->
+        <activity
+            android:name="com.yalantis.ucrop.UCropActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AppCompat.Light.NoActionBar"/>
+
+        <!-- ── Overlay + floating bubble service ───────────────────── -->
+        <!-- foregroundServiceType="dataSync" satisfies Android 14's    -->
+        <!-- strict foreground-service type requirement.                 -->
+        <service
+            android:name=".OverlayService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false"
+            android:enabled="true"/>
+
+        <!-- ── Screen capture service ──────────────────────────────── -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:foregroundServiceType="mediaProjection"
+            android:exported="false"/>
+
+        <!--
+            CallScreeningService — intercepts calls BEFORE they ring.
+            Only active when the user sets ScamShield as default caller-ID app.
+        -->
+        <service
+            android:name=".CallScreeningServiceImpl"
+            android:permission="android.permission.BIND_SCREENING_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telecom.CallScreeningService"/>
+            </intent-filter>
+        </service>
+
+        <!--
+            CallReceiver — PHONE_STATE broadcast fallback.
+            Works on all devices without any special default-app setting.
+        -->
+        <receiver
+            android:name=".CallReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PHONE_STATE"/>
+            </intent-filter>
+        </receiver>
+
+        <!--
+            NotificationListenerServiceImpl — reads WhatsApp, SMS and
+            email notifications to detect scam messages automatically.
+            User must grant access via Settings › Notification access.
+            Flutter calls MethodChannel('notification_settings')
+            .invokeMethod('openNotificationAccess') to deep-link there.
+        -->
+        <service
+            android:name=".NotificationListenerServiceImpl"
+            android:label="ScamShield Message Guard"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService"/>
+            </intent-filter>
+        </service>
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2"/>
+
+    </application>
+
+    <!-- ── Package visibility (Android 11+) ─────────────────────────── -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="http"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL"/>
+            <data android:scheme="tel"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.CALL"/>
+            <data android:scheme="tel"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="whatsapp"/>
+        </intent>
+        <package android:name="com.whatsapp"/>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+    </queries>
+
+</manifest>

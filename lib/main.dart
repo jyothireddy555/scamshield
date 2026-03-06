@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,6 +15,8 @@ import 'package:screenshot/screenshot.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
+
+import 'localization.dart';   // L.t("key") — all user-visible strings
 
 // ══════════════════════════════════════════════════════════════
 // NATIVE METHOD CHANNELS
@@ -34,40 +37,33 @@ Future<void> _showCallAlert(String number, String level, String message) async {
   catch (e) { debugPrint('❌ [OVERLAY] showCallAlert: $e'); }
 }
 
-// ── Show full scam result as a system overlay (works over ANY app) ──
-// Sends all result fields to the native OverlayService which inflates
-// a WindowManager view directly on screen — no need to be inside ScamShield.
 Future<void> _showScamOverlay(ScanResult result, {String source = 'Message'}) async {
   try {
-    if (!(await _hasOverlayPermission())) return;
-    final prefs = await SharedPreferences.getInstance();
-    final floatingEnabled = prefs.getBool(_kOverlayEnabled) ?? false;
-
-    // Only start overlay service if floating button feature is enabled
-
-
     await _overlayChannel.invokeMethod('showScamAlert', {
-      'source': source,
-      'probability': result.scamProbability.toInt(),
-      'riskLevel': result.riskLevel.label,
-      'fraudType': result.fraudType.label,
-      'fraudEmoji': result.fraudType.emoji,
-      'explanation': result.explanation,
-      'whatToDo': result.whatToDo,
-      'keywords': result.suspiciousKeywords.take(4).join(', '),
-      'helpline': result.helpline,
-      'showHelpline': result.showFullWarning,
+      'source':        source,
+      'probability':   result.scamProbability.toInt(),
+      'riskLevel':     result.riskLevel.label,
+      'fraudType':     result.fraudType.label,
+      'fraudEmoji':    result.fraudType.emoji,
+      'explanation':   result.explanation,
+      'whatToDo':      result.whatToDo,
+      'keywords':      result.suspiciousKeywords.take(4).join(', '),
+      'helpline':      result.helpline,
+      'showHelpline':  result.showFullWarning,
     });
-
   } catch (e) {
     debugPrint('❌ [OVERLAY] showScamAlert: $e');
   }
 }
 
 const _kOverlayEnabled       = 'overlay_enabled';
-const _kNotificationEnabled  = 'notification_enabled';   // Issue 2 — persist state
+const _kNotificationEnabled  = 'notification_enabled';
 
-// ── Theme colors ───────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════
+// THEME COLORS
+// ══════════════════════════════════════════════════════════════
+
 class _C {
   static const safe       = Color(0xFF2ED573);
   static const suspicious = Color(0xFFFF9F43);
@@ -76,8 +72,12 @@ class _C {
   static const cardBg     = Color(0xFF1e1e2e);
 }
 
-// ── Constants ──────────────────────────────────────────────────
-const double _kScamWarningThreshold = 70.0;
+// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════════════════════════════
+
+const double _kScamWarningThreshold = 65.0;
 const int    _kHistoryMax           = 50;
 const int    _kOcrMaxChars          = 3000;
 const int    _kContactsCacheMins    = 5;
@@ -94,8 +94,11 @@ final ValueNotifier<int> _pendingScreenshotCount  = ValueNotifier(0);
 // ENTRY POINT
 // ══════════════════════════════════════════════════════════════
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Load saved language before first frame
+  final prefs = await SharedPreferences.getInstance();
+  L.current = prefs.getString('lang') ?? 'te';
   runApp(const ScamShieldApp());
 }
 
@@ -134,6 +137,7 @@ extension RiskLevelExt on RiskLevel {
 
 extension FraudTypeExt on FraudType {
   String get label => switch (this) { FraudType.upi => 'UPI Fraud', FraudType.job => 'Job Scam', FraudType.lottery => 'Lottery Scam', FraudType.phishing => 'Phishing', FraudType.kyc => 'KYC Scam', FraudType.other => 'Other Scam', FraudType.none => 'Safe Message' };
+  String get biLabel => switch (this) { FraudType.upi => L.t('fraud_upi'), FraudType.job => L.t('fraud_job'), FraudType.lottery => L.t('fraud_lottery'), FraudType.phishing => L.t('fraud_phishing'), FraudType.kyc => L.t('fraud_kyc'), FraudType.other => L.t('fraud_other'), FraudType.none => L.t('fraud_safe') };
   String get emoji => switch (this) { FraudType.upi => '💸', FraudType.job => '💼', FraudType.lottery => '🎰', FraudType.phishing => '🎣', FraudType.kyc => '🆔', FraudType.other => '⚠️', FraudType.none => '✅' };
   Color  get color => switch (this) { FraudType.upi => const Color(0xFF2196F3), FraudType.job => const Color(0xFFFF9800), FraudType.lottery => const Color(0xFF9C27B0), FraudType.phishing => const Color(0xFFF44336), FraudType.kyc => const Color(0xFFFF5722), FraudType.other => const Color(0xFF607D8B), FraudType.none => const Color(0xFF2ED573) };
   static FraudType fromString(String s) {
@@ -190,9 +194,9 @@ class ScanResult {
   }
 
   Map<String, dynamic> toJson() => {
-    'scam_probability': scamProbability, 'is_scam': isScam,            'risk_level':  riskLevel.label,
+    'scam_probability': scamProbability, 'is_scam': isScam,             'risk_level':  riskLevel.label,
     'fraud_type':       fraudType.label, 'keywords': suspiciousKeywords, 'explanation': explanation,
-    'prevention_tips':  preventionTips,  'what_to_do': whatToDo,        'helpline':    helpline,
+    'prevention_tips':  preventionTips,  'what_to_do': whatToDo,         'helpline':    helpline,
     'original_text':    originalText,    'timestamp': timestamp.toIso8601String(),
   };
 
@@ -259,20 +263,45 @@ class NumberReputationService {
     final valid    = d['valid']         as bool?   ?? false;
     final lineType = (d['line_type']    as String? ?? '').toLowerCase();
     final country  = (d['country_code'] as String? ?? '').toUpperCase();
-    if (!valid)                                                                         return NumberCheckResult(number: number, risk: NumberRisk.suspicious, reason: 'This number appears invalid or not in service.',                                   advice: 'Be very cautious. Do not share any personal details.');
-    if (lineType == 'voip' || lineType == 'premium' || lineType == 'toll_free')        return NumberCheckResult(number: number, risk: NumberRisk.suspicious, reason: 'This is a ${lineType.toUpperCase()} number — commonly used by scammers.',         advice: 'Never share OTP, bank details, or Aadhaar with this caller.');
+    if (!valid)
+      return NumberCheckResult(number: number, risk: NumberRisk.suspicious,
+          reason: 'ఈ నంబర్ invalid గా కనిపిస్తోంది.\nYe number invalid lag raha hai.',
+          advice: 'జాగ్రత్తగా ఉండండి. Personal details share చేయకండి.');
+    if (lineType == 'voip' || lineType == 'premium' || lineType == 'toll_free')
+      return NumberCheckResult(number: number, risk: NumberRisk.suspicious,
+          reason: '${lineType.toUpperCase()} నంబర్ — స్కామర్లు ఉపయోగిస్తారు.\nYe ${lineType.toUpperCase()} number hai — scammer use karte hain.',
+          advice: L.t('dont_otp'));
     if (country == 'IN') return _localHeuristics(number);
-    return NumberCheckResult(number: number, risk: NumberRisk.unknown,    reason: 'This number could not be verified in our database.',                       advice: 'Be careful. Do not share sensitive information with unknown callers.');
+    return NumberCheckResult(number: number, risk: NumberRisk.unknown,
+        reason: 'ఈ నంబర్ verify చేయలేకపోయాం.\nIs number ko verify nahi kar sake.',
+        advice: 'Personal details share చేయకండి.\nPersonal details share mat karo.');
   }
 
   static NumberCheckResult _localHeuristics(String number) {
     final clean = number.replaceAll(RegExp(r'\D'), '');
-    if (clean.startsWith('92') && clean.length >= 11) return NumberCheckResult(number: number, risk: NumberRisk.spam,       reason: 'This number originates from Pakistan (+92) — frequently used in international scam calls targeting Indians.', advice: 'Do NOT answer or call back. Block this number immediately.');
-    if (clean.startsWith('1')  && clean.length == 11) return NumberCheckResult(number: number, risk: NumberRisk.suspicious, reason: 'This is a US/Canada number. International callers claiming to be from Indian banks or government are almost always scammers.', advice: 'Never share OTP, bank details, or Aadhaar with this caller.');
-    if (clean.startsWith('140') || clean.startsWith('160'))               return NumberCheckResult(number: number, risk: NumberRisk.suspicious, reason: 'This is a registered telemarketing number in India.',                  advice: 'You can ignore this. Do NOT share OTP or bank details.');
-    if (_isRepeatingPattern(clean))                                       return NumberCheckResult(number: number, risk: NumberRisk.spam,       reason: 'This number has a suspicious repeating digit pattern — likely a spoofed number.', advice: 'Do NOT share any details. This is almost certainly a scam.');
-    if (clean.length < 8)                                                 return NumberCheckResult(number: number, risk: NumberRisk.suspicious, reason: 'This number is unusually short.',                                      advice: "Be cautious. Verify the caller's identity before sharing anything.");
-    return NumberCheckResult(number: number, risk: NumberRisk.unknown, reason: 'This number is not saved in your contacts and could not be verified.', advice: 'Do not share OTP, bank PIN, Aadhaar, or personal details with unknown callers.');
+    if (clean.startsWith('92') && clean.length >= 11)
+      return NumberCheckResult(number: number, risk: NumberRisk.spam,
+          reason: 'Pakistan (+92) నుండి కాల్ — భారతీయులను target చేసే scam call.\nPakistan se call — Indian logo ko target karta hai.',
+          advice: '${L.t('dont_otp')}\n${L.t('block_num')}');
+    if (clean.startsWith('1') && clean.length == 11)
+      return NumberCheckResult(number: number, risk: NumberRisk.suspicious,
+          reason: 'USA/Canada నంబర్ — Indian banks/govt అని claim చేస్తే scam.\nUSA number — India bank/govt bolta hai toh SCAM hai.',
+          advice: L.t('dont_otp'));
+    if (clean.startsWith('140') || clean.startsWith('160'))
+      return NumberCheckResult(number: number, risk: NumberRisk.suspicious,
+          reason: 'Telemarketing నంబర్ — OTP అడిగితే scam.\nTelemarketing number — OTP maange toh SCAM.',
+          advice: '${L.t('dont_otp')}\n${L.t('dont_pin')}');
+    if (_isRepeatingPattern(clean))
+      return NumberCheckResult(number: number, risk: NumberRisk.spam,
+          reason: 'Suspicious repeating pattern — spoofed number.\nSandehaspada number — fake lag raha hai.',
+          advice: '${L.t('dont_otp')}\n${L.t('block_num')}');
+    if (clean.length < 8)
+      return NumberCheckResult(number: number, risk: NumberRisk.suspicious,
+          reason: 'చాలా చిన్న నంబర్ — అనుమానాస్పదం.\nBahut chhota number — sandehaspada.',
+          advice: 'Caller identity verify చేయండి.');
+    return NumberCheckResult(number: number, risk: NumberRisk.unknown,
+        reason: 'ఈ నంబర్ contacts లో లేదు.\nYe number contacts mein nahi hai.',
+        advice: 'OTP, Bank PIN, Aadhaar share చేయకండి.\nOTP, Bank PIN, Aadhaar mat batao.');
   }
 
   static bool   _isRepeatingPattern(String s) { if (s.length < 6) return false; final d = s.replaceAll(RegExp(r'^\+?[0-9]{1,3}'), ''); return d.isNotEmpty && d.split('').toSet().length <= 2; }
@@ -287,8 +316,95 @@ class NumberReputationService {
 
   static NumberCheckResult _unknown(String n) => NumberCheckResult(
       number: n, risk: NumberRisk.unknown,
-      reason: 'This number could not be identified.',
-      advice: 'Do not share sensitive information with unknown callers.');
+      reason: 'ఈ నంబర్ identify చేయలేకపోయాం.',
+      advice: 'Personal details share చేయకండి.');
+}
+
+// ══════════════════════════════════════════════════════════════
+// NOTIFICATION SMART FILTER
+// Aggressively suppresses authentic/known messages.
+// Only scam-pattern messages pass through to AI.
+// ══════════════════════════════════════════════════════════════
+
+class _NotifFilter {
+  // ── Definite-safe senders (regex on app name or title) ──────
+  static final _safeSenders = RegExp(
+    r'(HDFC|ICICI|SBI|Axis|Kotak|PNB|BOB|Canara|Union Bank|Paytm|PhonePe|GPay|Google Pay'
+    r'|Amazon|Flipkart|Swiggy|Zomato|Uber|Ola|IRCTC|Jio|Airtel|BSNL|Vi |Vodafone'
+    r'|NSDL|CDSL|Zerodha|Groww|CRED|MakeMyTrip|BookMyShow'
+    r'|DM-|VK-|AX-|AD-|BK-|VM-|BP-|CP-|CP-|DL-|MH-|TN-|KA-|AP-|TS-)',
+    caseSensitive: false,
+  );
+
+  // ── Message patterns that are 100% legitimate ───────────────
+  static final _safePatterns = [
+    // OTP — always legitimate bank/app generated
+    RegExp(r'\b\d{4,8}\b.*\b(otp|one.?time|code)\b', caseSensitive: false),
+    RegExp(r'\b(otp|code)\b.*\b\d{4,8}\b', caseSensitive: false),
+    // Delivery / order confirmations
+    RegExp(r'\b(delivered|out for delivery|shipped|dispatched|order.?placed|order.?confirmed)\b', caseSensitive: false),
+    // Balance alerts / transaction confirmations from banks (contain Rs/INR amount)
+    RegExp(r'\b(debited|credited|balance|available bal|txn|transaction).{0,40}(rs\.?|inr|₹)\s*\d', caseSensitive: false),
+    RegExp(r'(rs\.?|inr|₹)\s*\d.{0,40}\b(debited|credited|received|paid|charged)\b', caseSensitive: false),
+    // Recharge / bill payment success
+    RegExp(r'\b(recharge|bill.?paid|payment.?success|payment.?received)\b', caseSensitive: false),
+    // Promotional — offer/sale/discount from known retail patterns
+    RegExp(r'\b(sale|offer|discount|cashback|coupon|promo)\b.{0,60}\b(shop|buy|get|avail)\b', caseSensitive: false),
+    // Booking confirmations
+    RegExp(r'\b(ticket|booking|reservation|confirmed|pnr|seat)\b', caseSensitive: false),
+    // App notifications with action words that are generic
+    RegExp(r'\b(liked your|commented|started following|sent you a message|accepted your)\b', caseSensitive: false),
+  ];
+
+  // ── Definite scam signal patterns (bypass AI, immediate flag) ─
+  static final _instantScam = [
+    // Suspicious shortened / custom URLs
+    RegExp(r'https?://(bit\.ly|tinyurl|t\.me|wa\.me|goo\.gl|tiny\.cc|rb\.gy|shorte\.st|is\.gd)/', caseSensitive: false),
+    RegExp(r'https?://[a-z0-9\-]+\.(xyz|top|club|online|site|info|live|win|buzz)\b', caseSensitive: false),
+    // Credential harvest phrases
+    RegExp(r'\b(verify.{0,15}account|confirm.{0,15}identity|update.{0,15}details|account.{0,10}(suspended|blocked|expired))\b', caseSensitive: false),
+    RegExp(r'\b(click.{0,10}link|tap.{0,10}link|login.{0,10}link|reset.{0,10}password)\b', caseSensitive: false),
+    // Remote access — highest risk
+    RegExp(r'\b(anydesk|teamviewer|airdroid|remote.?access|screen.?share)\b', caseSensitive: false),
+    // Fake govt/legal threat
+    RegExp(r'\b(arrested|cyber.?crime|legal.?notice|case.?filed|court|police.{0,10}notice)\b', caseSensitive: false),
+    // KYC / Aadhaar link scams
+    RegExp(r'\b(kyc.{0,20}(link|update|expire|complete)|aadhaar.{0,10}(link|expire|block))\b', caseSensitive: false),
+  ];
+
+  // ── Telugu & Hindi scam phrases (instant flag) ───────────────
+  static final _teluguHindiScam = [
+    // Telugu
+    RegExp(r'(OTP చెప్పండి|లింక్ క్లిక్|గెలిచారు|బహుమతి|ఖాతా బ్లాక్|KYC పూర్తి|లాటరీ|ఉద్యోగం)', caseSensitive: false),
+    // Hindi
+    RegExp(r'(OTP batao|link kholein|jeet gaye|inaam|account band|KYC karo|lottery|naukri)', caseSensitive: false),
+  ];
+
+  /// Returns true if this notification should be silently ignored.
+  /// IMPORTANT: Call isInstantScam() BEFORE this — instant scam signals always win.
+  static bool isSafe(String app, String title, String text) {
+    // Only match safe-sender regex against the actual sender (app package + notification title),
+    // NOT against the message body. This prevents contact names like "Mine Airtel" from
+    // accidentally matching "Airtel" and causing scam messages to be skipped.
+    final senderOnly = '$app $title';
+    if (_safeSenders.hasMatch(senderOnly)) return true;
+    // Safe message pattern → ignore (only if body has no scam signals)
+    for (final p in _safePatterns) {
+      if (p.hasMatch(text)) return true;
+    }
+    return false;
+  }
+
+  /// Returns true if this is an instant scam with no need to call AI.
+  static bool isInstantScam(String text) {
+    for (final p in _instantScam) {
+      if (p.hasMatch(text)) return true;
+    }
+    for (final p in _teluguHindiScam) {
+      if (p.hasMatch(text)) return true;
+    }
+    return false;
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -303,7 +419,6 @@ class OcrService {
     catch (e) { debugPrint('❌ [OCR] $e'); return ''; }
   }
 
-  // Parallel processing + cap at _kOcrMaxChars
   static Future<String> extractFromPaths(List<String> paths) async {
     if (paths.isEmpty) return '';
     try {
@@ -347,58 +462,83 @@ class ApiService {
 
 class WhatsAppReporter {
   static Future<void> report(ScanResult r) async {
-    final ts       = '${r.timestamp.day.toString().padLeft(2, '0')}/'
-        '${r.timestamp.month.toString().padLeft(2, '0')}/'
-        '${r.timestamp.year} '
-        '${r.timestamp.hour.toString().padLeft(2, '0')}:'
-        '${r.timestamp.minute.toString().padLeft(2, '0')}';
     final keywords = r.suspiciousKeywords.isNotEmpty ? r.suspiciousKeywords.join(', ') : 'None';
-
     final body = [
-      '🚨 *SCAM ALERT*',
-      '',
-      'Detected by *ScamShield*.',
-      '',
-      '⚠️ Risk Level: ${r.riskLevel.label}',
-      '📊 Scam Probability: ${r.scamProbability.toInt()}%',
-      '🏷 Fraud Type: ${r.fraudType.label}',
-      '',
-      '🔎 Suspicious Keywords:',
-      keywords,
-      '',
-      '📩 Message Content:',
-      r.originalText,
-      '',
-      '🧠 Why it is dangerous:',
-      r.explanation,
-      '',
-      '⚠️ Stay safe. Never share OTP, bank PIN, Aadhaar, or passwords.',
-      '',
-      '— Shared via ScamShield',
+      '🚨 *SCAM ALERT — ScamShield*', '',
+      '⚠️ Risk: ${r.riskLevel.label}  |  ${r.scamProbability.toInt()}%',
+      '🏷 Type: ${r.fraudType.label}', '',
+      '🔎 Keywords: $keywords', '',
+      '📩 Message: ${r.originalText}', '',
+      '🧠 Why dangerous: ${r.explanation}', '',
+      L.t('dont_otp'),
+      '— ScamShield',
     ].join('\n');
-
     final uri = Uri.parse('whatsapp://send?text=${Uri.encodeComponent(body)}');
     try {
-      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!launched) debugPrint('⚠️ [REPORT] WhatsApp not installed');
-    } catch (e) {
-      debugPrint('⚠️ [REPORT] WhatsApp launch failed: $e');
-    }
+      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) debugPrint('⚠️ WhatsApp not installed');
+    } catch (e) { debugPrint('⚠️ [REPORT] $e'); }
   }
 }
 
 // ══════════════════════════════════════════════════════════════
-// LOCAL FALLBACK ENGINE
+// LOCAL FALLBACK ENGINE  (English + Telugu + Hindi keywords)
 // ══════════════════════════════════════════════════════════════
 
 class _LocalEngine {
-  static const _upi     = ['upi','gpay','phonepe','paytm','vpa','payment link','qr code','scan qr','neft','imps','bank account number'];
-  static const _job     = ['work from home','part time job','data entry','typing job','earn daily','guaranteed salary','no experience required','registration fee','training fee','whatsapp job'];
-  static const _lottery = ['lottery','lucky draw','prize winner','you have won','congratulations you','claim your reward','lucky winner','processing fee','cash prize'];
-  static const _phish   = ['click here to verify','verify your account','account suspended','account has been blocked','update your details','login link','bit.ly','tinyurl','password reset link','confirm your identity'];
-  static const _kyc     = ['kyc update','kyc expired','kyc pending','kyc verify','complete your kyc','aadhaar link','pan card update','link your aadhaar'];
-  static const _otp     = ['otp','one time password','share otp','send otp','anydesk','teamviewer','remote access','screen share'];
-  static const _general = ['urgent action required','immediate action','account will expire','limited time offer','act now or lose','do not ignore this'];
+  static const _upi = [
+    'upi','gpay','phonepe','paytm','vpa','payment link','qr code','scan qr','neft','imps','bank account number',
+    // Telugu
+    'bank details','పేమెంట్','బ్యాంక్ details','qr స్కాన్',
+    // Hindi
+    'bank ka number','paisa bhejo','payment karo','qr scan karo',
+  ];
+  static const _job = [
+    'work from home','part time job','data entry','typing job','earn daily','guaranteed salary',
+    'no experience required','registration fee','training fee','whatsapp job',
+    // Telugu
+    'ఇంట్లో పని','రోజూ సంపాదన','రిజిస్ట్రేషన్ ఫీ',
+    // Hindi
+    'ghar se kaam','roz kamaai','registration fee do','training fee',
+  ];
+  static const _lottery = [
+    'lottery','lucky draw','prize winner','you have won','congratulations you','claim your reward',
+    'lucky winner','processing fee','cash prize',
+    // Telugu
+    'లాటరీ','అదృష్టం','బహుమతి గెలుచుకున్నారు','ప్రాసెసింగ్ ఫీ',
+    // Hindi
+    'lottery jeeti','inaam mila','processing fee bhejo','lucky winner',
+  ];
+  static const _phish = [
+    'click here to verify','verify your account','account suspended','account has been blocked',
+    'update your details','login link','bit.ly','tinyurl','password reset link','confirm your identity',
+    // Telugu
+    'account బ్లాక్','లింక్ క్లిక్','verify చేయండి',
+    // Hindi
+    'account band','link kholo','verify karo',
+  ];
+  static const _kyc = [
+    'kyc update','kyc expired','kyc pending','kyc verify','complete your kyc',
+    'aadhaar link','pan card update','link your aadhaar',
+    // Telugu
+    'kyc పూర్తి','ఆధార్ లింక్','pan అప్‌డేట్',
+    // Hindi
+    'kyc karo','aadhaar link karo','pan update karo',
+  ];
+  static const _otp = [
+    'otp','one time password','share otp','send otp','anydesk','teamviewer','remote access','screen share',
+    // Telugu
+    'otp చెప్పండి','స్క్రీన్ చూపించండి',
+    // Hindi
+    'otp batao','screen dikhao',
+  ];
+  static const _general = [
+    'urgent action required','immediate action','account will expire','limited time offer',
+    'act now or lose','do not ignore this',
+    // Telugu
+    'వెంటనే చర్య','అత్యవసరం',
+    // Hindi
+    'abhi karo','urgent hai','turant karo',
+  ];
 
   static ScanResult detect(String text) {
     final lo     = text.toLowerCase();
@@ -420,33 +560,33 @@ class _LocalEngine {
     return ScanResult(
       scamProbability: raw, isScam: raw >= 50, riskLevel: rl, fraudType: ft,
       suspiciousKeywords: found, explanation: _explain(ft, raw), preventionTips: _tips(ft),
-      whatToDo: rl == RiskLevel.safe ? 'No immediate action needed. Stay vigilant.' : 'Do NOT share any details. Call 1930 immediately if you already responded.',
+      whatToDo: rl == RiskLevel.safe ? L.t('wtd_safe') : rl == RiskLevel.suspicious ? L.t('wtd_susp') : L.t('wtd_high'),
       helpline: '1930', originalText: text, timestamp: DateTime.now(),
     );
   }
 
-  static int    _hits(String t, List<String> words) => words.where((w) => t.contains(w.toLowerCase())).length;
+  static int _hits(String t, List<String> words) => words.where((w) => t.contains(w.toLowerCase())).length;
 
   static String _explain(FraudType ft, double score) {
-    if (score < 15) return 'No significant scam indicators found. The message appears safe.';
+    if (score < 15) return '${L.t('wtd_safe')}\nNo significant scam indicators found.';
     switch (ft) {
-      case FraudType.upi:      return 'UPI/payment fraud detected. Never share your PIN, OTP or click unverified payment links.';
-      case FraudType.job:      return 'Job scam detected. Legitimate employers never ask you to pay to get hired.';
-      case FraudType.lottery:  return 'Lottery scam detected. You cannot win a contest you never entered.';
-      case FraudType.phishing: return 'Phishing detected. Always type official URLs — never click links in messages.';
-      case FraudType.kyc:      return 'KYC scam detected. Banks never ask you to complete KYC via an SMS link.';
-      default:                 return 'Suspicious patterns detected. Verify through official channels before taking any action.';
+      case FraudType.upi:      return 'UPI మోసం గుర్తించబడింది!\nUPI fraud pakda gaya!\nPIN, OTP, QR share చేయకండి.';
+      case FraudType.job:      return 'Job మోసం!\nJob scam hai!\nEmployer ఎప్పుడూ పైసలు అడగడు.';
+      case FraudType.lottery:  return 'Lottery మోసం!\nLottery scam hai!\nEnter చేయని Lottery win అవదు.';
+      case FraudType.phishing: return 'Phishing link!\nNaqli link hai!\nLinks click చేయకండి.';
+      case FraudType.kyc:      return 'KYC మోసం!\nKYC scam hai!\nBank SMS లో KYC link పంపదు.';
+      default:                 return 'Suspicious patterns detected.\nజాగ్రత్తగా ఉండండి!\nSaavdhan rahein!';
     }
   }
 
   static List<String> _tips(FraudType ft) {
     switch (ft) {
-      case FraudType.upi:      return ['Never share UPI PIN or OTP — not even with bank employees.','QR code scanning sends money FROM you, not to you.','Only use payment apps from the official Play Store.','Verify the recipient name before every transfer.'];
-      case FraudType.job:      return ['Real employers never charge registration or training fees.','Verify the company on LinkedIn or their official site.','WhatsApp job offers from unknown numbers are almost always scams.','Use Naukri or NCS portal for safe job searches.'];
-      case FraudType.lottery:  return ['You cannot win a lottery you never entered.','Never pay any fee to receive prize money.','Do not share Aadhaar or bank details for prize claims.','Report at cybercrime.gov.in or call 1930.'];
-      case FraudType.phishing: return ['Never click links in SMS or WhatsApp — type official URLs directly.','Your bank will never ask for your password or OTP via a message.','Check URLs carefully — fraudsters use domains like sbi-secure.xyz.','Enable two-factor authentication on all banking apps.'];
-      case FraudType.kyc:      return ['KYC is done only at your bank branch or the official banking app.','Never upload Aadhaar/PAN through a link sent in a message.','Call your bank official helpline to verify any KYC request.','Your account will not be blocked just because of a message.'];
-      default:                 return ['Do not click any unknown links.','Never share your OTP or bank PIN with anyone.','Call the National Cybercrime Helpline: 1930.','Report scam messages at cybercrime.gov.in.'];
+      case FraudType.upi:      return [L.t('tip_otp'), L.t('tip_qr'), 'Play Store నుండి మాత్రమే payment apps వాడండి.', 'Transfer చేయడానికి ముందు recipient పేరు చెక్ చేయండి.'];
+      case FraudType.job:      return [L.t('tip_job'), 'Company LinkedIn లో verify చేయండి.', 'WhatsApp job offers unknown numbers నుండి వస్తే నమ్మకండి.', 'Naukri / NCS portal వాడండి.'];
+      case FraudType.lottery:  return [L.t('tip_lottery'), 'Lottery prize కోసం పైసలు అడిగితే scam.', 'Aadhaar / Bank details share చేయకండి.', '1930 కి call చేయండి.'];
+      case FraudType.phishing: return [L.t('tip_link'), 'Bank ఎప్పుడూ SMS లో password అడగదు.', 'URLs జాగ్రత్తగా చదవండి — sbi-secure.xyz అంటే fake.', 'Banking apps లో 2FA enable చేయండి.'];
+      case FraudType.kyc:      return [L.t('tip_kyc'), 'KYC bank branch లో మాత్రమే చేయాలి.', 'SMS లో Aadhaar/PAN link పంపారు అంటే scam.', 'Official bank helpline కి call చేయండి.'];
+      default:                 return [L.t('tip_link'), L.t('tip_otp'), '1930 కి call చేయండి.\n1930 pe call karein.', 'cybercrime.gov.in లో report చేయండి.'];
     }
   }
 }
@@ -528,47 +668,275 @@ class ContactsHelper {
 // ══════════════════════════════════════════════════════════════
 
 Future<ScanResult?> _runPipeline({
-  required List<String> imagePaths,
-  required BuildContext context,
+  required List<String>          imagePaths,
+  required BuildContext          context,
   required void Function(String) setStatus,
   bool deleteTempAfter = false,
-  bool showOverlay = false,
 }) async {
   if (imagePaths.isEmpty) { setStatus('No images to analyze.'); return null; }
-
-  setStatus('Extracting text from image…');
+  setStatus(L.t('status_ocr'));
   final text = await OcrService.extractFromPaths(imagePaths);
-  debugPrint('\n─────\n📄 OCR (${text.length} chars):\n${text.substring(0, text.length.clamp(0, 300))}…\n─────');
-
-  if (text.trim().isEmpty) { setStatus('No text found. Try cropping more tightly.'); return null; }
-  if (text.trim().length < 5) { setStatus('Could not read text. Try a sharper crop.'); return null; }
-
-  setStatus('Analyzing with AI…');
+  if (text.trim().isEmpty) { setStatus(L.t('no_text')); return null; }
+  if (text.trim().length < 5) { setStatus('Text చదవలేదు. Sharp image try చేయండి.'); return null; }
+  setStatus(L.t('status_ai'));
   final result = await ApiService.analyze(text);
   await HistoryService.save(result);
-
   if (deleteTempAfter) {
     for (final p in imagePaths) {
-      if (p.contains('snap_')) {
-        try { await File(p).delete(); } catch (_) {}
-      }
+      if (p.contains('snap_')) { try { await File(p).delete(); } catch (_) {} }
     }
   }
-
   if (context.mounted) {
-    setStatus('Tap the button to scan any message');
-    // Show in-app dialog (user is inside ScamShield) AND send to overlay
-    // so the result is visible even if the user navigates away mid-scan.
-    if (showOverlay && result.scamProbability >= 50) {
-      await _showScamOverlay(result, source: 'Screenshot');
-    }
+    setStatus(L.t('status_idle'));
+    if (result.scamProbability >= 50) await _showScamOverlay(result, source: 'Screenshot');
     await showDialog<void>(context: context, builder: (_) => ScamAlertDialog(result: result));
   }
   return result;
 }
 
 // ══════════════════════════════════════════════════════════════
-// CALL ALERT DIALOG
+// ANIMATED SPAM CALL WARNING SCREEN
+// Full-screen immersive warning for spam/suspicious calls.
+// Telugu + Hindi + English text. Big, clear, rural-friendly.
+// ══════════════════════════════════════════════════════════════
+
+class SpamCallWarningScreen extends StatefulWidget {
+  final NumberCheckResult result;
+  const SpamCallWarningScreen({super.key, required this.result});
+  @override State<SpamCallWarningScreen> createState() => _SpamCallWarningState();
+}
+
+class _SpamCallWarningState extends State<SpamCallWarningScreen>
+    with TickerProviderStateMixin {
+
+  late AnimationController _pulseCtrl;
+  late AnimationController _shakeCtrl;
+  late AnimationController _slideCtrl;
+  late Animation<double>   _pulseAnim;
+  late Animation<double>   _shakeAnim;
+  late Animation<Offset>   _slideAnim;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Pulsing danger ring
+    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))
+      ..repeat(reverse: true);
+    _pulseAnim = Tween<double>(begin: 1.0, end: 1.18).animate(
+        CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+
+    // Shake animation for the warning icon
+    _shakeCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 400))
+      ..repeat(reverse: true);
+    _shakeAnim = Tween<double>(begin: -6.0, end: 6.0).animate(
+        CurvedAnimation(parent: _shakeCtrl, curve: Curves.elasticIn));
+
+    // Slide-in cards from bottom
+    _slideCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.4), end: Offset.zero).animate(
+        CurvedAnimation(parent: _slideCtrl, curve: Curves.easeOutBack));
+    _slideCtrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _pulseCtrl.dispose();
+    _shakeCtrl.dispose();
+    _slideCtrl.dispose();
+    super.dispose();
+  }
+
+  bool get _isSpam => widget.result.risk == NumberRisk.spam;
+  Color get _color => widget.result.risk.color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _isSpam ? const Color(0xFF1a0000) : const Color(0xFF1a1000),
+      body: SafeArea(
+        child: Column(children: [
+
+          // ── Top bar with close ───────────────────────────────
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              const Text('🛡️ ScamShield', style: TextStyle(color: Colors.white54, fontSize: 13)),
+              TextButton.icon(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.close_rounded, color: Colors.white38, size: 18),
+                label: Text(L.t('dismiss'), style: TextStyle(color: Colors.white38, fontSize: 12)),
+              ),
+            ]),
+          ),
+
+          Expanded(child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: Column(children: [
+
+              // ── Animated warning icon ─────────────────────────
+              AnimatedBuilder(
+                animation: _shakeAnim,
+                builder: (_, child) => Transform.translate(
+                  offset: Offset(_shakeAnim.value, 0),
+                  child: child,
+                ),
+                child: AnimatedBuilder(
+                  animation: _pulseAnim,
+                  builder: (_, child) => Transform.scale(
+                    scale: _pulseAnim.value,
+                    child: Container(
+                      width: 120, height: 120,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: _color.withOpacity(0.15),
+                        border: Border.all(color: _color.withOpacity(0.7), width: 3),
+                        boxShadow: [BoxShadow(color: _color.withOpacity(0.4), blurRadius: 30, spreadRadius: 10)],
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(widget.result.risk.emoji, style: const TextStyle(fontSize: 56)),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+
+              // ── Main title ────────────────────────────────────
+              Text(
+                _isSpam ? L.t('spam_call') : L.t('susp_call'),
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: _color, height: 1.4),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                widget.result.number,
+                style: TextStyle(fontSize: 18, color: Colors.white, letterSpacing: 3, fontWeight: FontWeight.w300),
+              ),
+              const SizedBox(height: 20),
+
+              // ── Reason card ───────────────────────────────────
+              SlideTransition(
+                position: _slideAnim,
+                child: _WarningCard(
+                  color: _color,
+                  icon: Icons.info_outline_rounded,
+                  title: 'ఎందుకు Warning? / Warning Kyun?',
+                  body: widget.result.reason,
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // ── DO NOT share rules — big animated cards ───────
+              SlideTransition(
+                position: _slideAnim,
+                child: Column(children: [
+                  _DontCard(emoji: '🔢', mainKey: 'dont_otp',    hintKey: 'dont_otp_hint'),
+                  const SizedBox(height: 8),
+                  _DontCard(emoji: '🏦', mainKey: 'dont_pin',    hintKey: 'dont_pin_hint'),
+                  const SizedBox(height: 8),
+                  _DontCard(emoji: '🪪', mainKey: 'dont_aadhar', hintKey: 'dont_aadhar_hint'),
+                  const SizedBox(height: 8),
+                  _DontCard(emoji: '🔗', mainKey: 'dont_link',   hintKey: 'dont_link_hint'),
+                  const SizedBox(height: 8),
+                  _DontCard(emoji: '📱', mainKey: 'dont_app',    hintKey: 'dont_app_hint'),
+                ]),
+              ),
+              const SizedBox(height: 16),
+
+              // ── What to do ────────────────────────────────────
+              _WarningCard(
+                color: const Color(0xFF2ED573),
+                icon: Icons.bolt_rounded,
+                title: L.t('what_now'),
+                body: _isSpam
+                    ? '1️⃣ Phone కట్ చేయండి — Phone kaato!\n2️⃣ Number block చేయండి — Block karo!\n3️⃣ 1930 కి call చేయండి — 1930 pe call karo!'
+                    : '1️⃣ Personal details share చేయకండి\n2️⃣ OTP, PIN, Aadhaar చెప్పకండి\n3️⃣ Bank అయితే official number కి call చేయండి',
+              ),
+              const SizedBox(height: 20),
+
+              // ── Action buttons ────────────────────────────────
+              if (_isSpam) ...[
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red, foregroundColor: Colors.white,
+                    minimumSize: const Size(double.infinity, 54),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  onPressed: () async {
+                    Navigator.pop(context);
+                    try { await launchUrl(Uri.parse('tel:1930')); } catch (_) {}
+                  },
+                  icon: const Icon(Icons.call_rounded),
+                  label: const Text('📞 1930 కి Call చేయండి\n1930 pe Call Karein',
+                      textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                ),
+                const SizedBox(height: 10),
+              ],
+              Row(children: [
+                Expanded(child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(color: _color.withOpacity(0.5)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.check_rounded),
+                  label: const Text('Dismiss\nసరే', textAlign: TextAlign.center, style: TextStyle(fontSize: 13)),
+                )),
+              ]),
+
+            ]),
+          )),
+        ]),
+      ),
+    );
+  }
+}
+
+// Sub-widgets for the warning screen
+class _WarningCard extends StatelessWidget {
+  final Color color; final IconData icon; final String title; final String body;
+  const _WarningCard({required this.color, required this.icon, required this.title, required this.body});
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity, padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: color.withOpacity(0.08), borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: color.withOpacity(0.35)),
+    ),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [Icon(icon, color: color, size: 18), const SizedBox(width: 8),
+        Flexible(child: Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13)))]),
+      const SizedBox(height: 10),
+      Text(body, style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.6)),
+    ]),
+  );
+}
+
+class _DontCard extends StatelessWidget {
+  final String emoji; final String mainKey; final String hintKey;
+  const _DontCard({required this.emoji, required this.mainKey, required this.hintKey});
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    decoration: BoxDecoration(
+      color: Colors.red.withOpacity(0.12), borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: Colors.red.withOpacity(0.4)),
+    ),
+    child: Row(children: [
+      Text(emoji, style: const TextStyle(fontSize: 28)),
+      const SizedBox(width: 14),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(L.t(mainKey), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+        Text(L.t(hintKey),  style: const TextStyle(color: Colors.white70, fontSize: 13)),
+      ])),
+      const Icon(Icons.block_rounded, color: Colors.red, size: 22),
+    ]),
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// CALL ALERT DIALOG  (in-app, for unknown calls — simplified)
 // ══════════════════════════════════════════════════════════════
 
 class CallAlertDialog extends StatelessWidget {
@@ -587,31 +955,30 @@ class CallAlertDialog extends StatelessWidget {
             decoration: BoxDecoration(shape: BoxShape.circle, color: color.withOpacity(0.15), border: Border.all(color: color.withOpacity(0.5), width: 2)),
             child: Text(result.risk.emoji, style: const TextStyle(fontSize: 40))),
         const SizedBox(height: 14),
-        Text(result.risk.title, textAlign: TextAlign.center, style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: color)),
+        Text(result.risk.title, textAlign: TextAlign.center, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: color)),
         const SizedBox(height: 6),
         Text(result.number, style: const TextStyle(fontSize: 16, color: Colors.white70, letterSpacing: 2)),
         const SizedBox(height: 18),
-        _infoBox(color, Icons.info_outline_rounded, 'Why this alert?', result.reason),
-        const SizedBox(height: 14),
-        _infoBox(Colors.redAccent, Icons.shield_rounded, 'Stay Safe', result.advice),
-        const SizedBox(height: 18),
-        Container(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        _infoBox(color, Icons.info_outline_rounded, L.t('why_alert'), result.reason),
+        const SizedBox(height: 12),
+        _infoBox(Colors.redAccent, Icons.shield_rounded, L.t('stay_safe'), result.advice),
+        const SizedBox(height: 16),
+        Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(color: Colors.red.shade900.withOpacity(0.3), borderRadius: BorderRadius.circular(10)),
-            child: const Row(children: [
-              Text('🚫', style: TextStyle(fontSize: 18)), SizedBox(width: 10),
-              Expanded(child: Text('NEVER share OTP • bank PIN • Aadhaar • passwords', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12))),
-            ])),
+            child: const Text('🚫 OTP • Bank PIN • Aadhaar\nఎవరికీ చెప్పకండి! Kisi ko mat batao!',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13, height: 1.5))),
         const SizedBox(height: 20),
         Row(children: [
           Expanded(child: OutlinedButton(
             style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white24), padding: const EdgeInsets.symmetric(vertical: 12)),
             onPressed: () => Navigator.pop(context),
-            child: const Text('Dismiss'),
+            child: Text(L.t('dismiss')),
           )),
           const SizedBox(width: 10),
           Expanded(child: ElevatedButton.icon(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 12)),
-            onPressed: () async { Navigator.pop(context); try { await launchUrl(Uri.parse('tel:1930')); } catch (e) { debugPrint('❌ tel:1930 $e'); } },
+            onPressed: () async { Navigator.pop(context); try { await launchUrl(Uri.parse('tel:1930')); } catch (_) {} },
             icon: const Icon(Icons.call_rounded, size: 16),
             label: const Text('Call 1930', style: TextStyle(fontWeight: FontWeight.bold)),
           )),
@@ -624,7 +991,8 @@ class CallAlertDialog extends StatelessWidget {
     width: double.infinity, padding: const EdgeInsets.all(14),
     decoration: BoxDecoration(color: color.withOpacity(0.08), borderRadius: BorderRadius.circular(12), border: Border.all(color: color.withOpacity(0.3))),
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [Icon(icon, color: color, size: 16), const SizedBox(width: 8), Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13))]),
+      Row(children: [Icon(icon, color: color, size: 16), const SizedBox(width: 8),
+        Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13))]),
       const SizedBox(height: 8),
       Text(body, style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.5)),
     ]),
@@ -632,7 +1000,7 @@ class CallAlertDialog extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════
-// WIDGETS
+// WIDGETS  (bilingual labels)
 // ══════════════════════════════════════════════════════════════
 
 class ProbabilityMeter extends StatelessWidget {
@@ -643,7 +1011,7 @@ class ProbabilityMeter extends StatelessWidget {
     final color = riskLevel.color;
     return Column(children: [
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        const Text('Scam Risk:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+        Text(L.t('risk_label'), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
         Row(children: [
           Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(color: color.withOpacity(0.15), borderRadius: BorderRadius.circular(20), border: Border.all(color: color.withOpacity(0.45))),
@@ -656,28 +1024,26 @@ class ProbabilityMeter extends StatelessWidget {
       ClipRRect(borderRadius: BorderRadius.circular(8),
           child: LinearProgressIndicator(value: probability / 100, backgroundColor: Colors.white12, valueColor: AlwaysStoppedAnimation<Color>(color), minHeight: 16)),
       const SizedBox(height: 6),
-      const Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        Text('Safe',       style: TextStyle(fontSize: 10, color: _C.safe)),
-        Text('Suspicious', style: TextStyle(fontSize: 10, color: _C.suspicious)),
-        Text('High Risk',  style: TextStyle(fontSize: 10, color: _C.highRisk)),
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Text(L.t('safe_label'),     style: const TextStyle(fontSize: 10, color: _C.safe)),
+        const Text('Suspicious',    style: TextStyle(fontSize: 10, color: _C.suspicious)),
+        Text(L.t('high_risk_label'),  style: const TextStyle(fontSize: 10, color: _C.highRisk)),
       ]),
     ]);
   }
 }
 
 class FraudTypeBadge extends StatelessWidget {
-  final FraudType fraudType;
-  const FraudTypeBadge({super.key, required this.fraudType});
+  final FraudType fraudType; final bool bilingual;
+  const FraudTypeBadge({super.key, required this.fraudType, this.bilingual = false});
   @override
   Widget build(BuildContext context) {
     final c = fraudType.color;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(color: c.withOpacity(0.15), borderRadius: BorderRadius.circular(20), border: Border.all(color: c.withOpacity(0.45))),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Text(fraudType.emoji, style: const TextStyle(fontSize: 14)), const SizedBox(width: 6),
-        Text(fraudType.label, style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 13)),
-      ]),
+      child: Text(bilingual ? fraudType.biLabel : '${fraudType.emoji} ${fraudType.label}',
+          style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 13)),
     );
   }
 }
@@ -690,8 +1056,8 @@ class HighlightedText extends StatelessWidget {
     if (highlightWords.isEmpty || text.isEmpty) return Text(text, style: const TextStyle(fontSize: 13, color: Colors.white70, height: 1.5));
     final escaped = highlightWords.where((w) => w.trim().isNotEmpty).map(RegExp.escape).toList();
     if (escaped.isEmpty) return Text(text, style: const TextStyle(fontSize: 13, color: Colors.white70, height: 1.5));
-    final regex  = RegExp('(${escaped.join('|')})', caseSensitive: false);
-    final spans  = <TextSpan>[]; int last = 0;
+    final regex = RegExp('(${escaped.join('|')})', caseSensitive: false);
+    final spans = <TextSpan>[]; int last = 0;
     for (final m in regex.allMatches(text)) {
       if (m.start > last) spans.add(TextSpan(text: text.substring(last, m.start), style: const TextStyle(fontSize: 13, color: Colors.white70, height: 1.5)));
       spans.add(TextSpan(text: m.group(0), style: const TextStyle(backgroundColor: Color(0xFFFFEB3B), color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 13, height: 1.5)));
@@ -710,13 +1076,14 @@ class PreventionTipsWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     if (tips.isEmpty) return const SizedBox.shrink();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('🛡️ Prevention Tips', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+      Text(L.t('prevention'), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
       const SizedBox(height: 10),
       ...tips.asMap().entries.map((e) => Padding(
         padding: const EdgeInsets.only(bottom: 10),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Container(width: 34, height: 34, decoration: BoxDecoration(color: Colors.white.withOpacity(0.07), borderRadius: BorderRadius.circular(8)), alignment: Alignment.center, child: Text(_icons[e.key % _icons.length], style: const TextStyle(fontSize: 16))),
-          const SizedBox(width: 12), Expanded(child: Text(e.value, style: const TextStyle(fontSize: 13, color: Colors.white70, height: 1.5))),
+          const SizedBox(width: 12),
+          Expanded(child: Text(e.value, style: const TextStyle(fontSize: 13, color: Colors.white70, height: 1.5))),
         ]),
       )),
     ]);
@@ -736,9 +1103,9 @@ class WhatToDoWidget extends StatelessWidget {
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Icon(Icons.bolt_rounded, color: color, size: 20), const SizedBox(width: 10),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('What To Do Now', style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13)),
+          Text(L.t('what_now'), style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13)),
           const SizedBox(height: 4),
-          Text(action, style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.5)),
+          Text(action, style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.6)),
         ])),
       ]),
     );
@@ -767,22 +1134,22 @@ class _CybercrimeHelplineBanner extends StatelessWidget {
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(result.helpline, style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 4)),
             const SizedBox(height: 3),
-            Text('Available 24 × 7  •  Free call', style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+            Text('24×7 Free  •  ఉచిత సేవ', style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
             Text('cybercrime.gov.in', style: TextStyle(fontSize: 11, color: Colors.blue.shade300)),
           ]),
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10)),
-              onPressed: () async { try { await launchUrl(Uri.parse('tel:${result.helpline}')); } catch (e) { debugPrint('❌ tel $e'); } },
+              onPressed: () async { try { await launchUrl(Uri.parse('tel:${result.helpline}')); } catch (_) {} },
               icon: const Icon(Icons.call_rounded, size: 16),
-              label: const Text('Call Now', style: TextStyle(fontWeight: FontWeight.bold)),
+              label: Text(L.t('helpline_call'), style: TextStyle(fontWeight: FontWeight.bold)),
             ),
             const SizedBox(height: 8),
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(side: BorderSide(color: Colors.green.shade400), foregroundColor: Colors.green.shade400, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
               onPressed: () => WhatsAppReporter.report(result),
               icon: const Icon(Icons.send_rounded, size: 14),
-              label: const Text('Report via WhatsApp', style: TextStyle(fontSize: 12)),
+              label: const Text('WhatsApp Report', style: TextStyle(fontSize: 12)),
             ),
           ]),
         ]),
@@ -792,7 +1159,7 @@ class _CybercrimeHelplineBanner extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════
-// SCAM ALERT DIALOG
+// SCAM ALERT DIALOG  (message scans)
 // ══════════════════════════════════════════════════════════════
 
 class ScamAlertDialog extends StatelessWidget {
@@ -800,9 +1167,9 @@ class ScamAlertDialog extends StatelessWidget {
   const ScamAlertDialog({super.key, required this.result});
 
   String get _title => switch (result.riskLevel) {
-    RiskLevel.highRisk   => '🚨 SCAM DETECTED!',
-    RiskLevel.suspicious => '⚠️ Suspicious Message',
-    RiskLevel.safe       => '✅ Looks Safe',
+    RiskLevel.highRisk   => L.t('scam_found'),
+    RiskLevel.suspicious => L.t('susp_found'),
+    RiskLevel.safe       => L.t('safe_found'),
   };
 
   @override
@@ -818,23 +1185,27 @@ class ScamAlertDialog extends StatelessWidget {
 
         Icon(result.riskLevel.icon, size: 64, color: color),
         const SizedBox(height: 8),
-        Text(_title, textAlign: TextAlign.center, style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: color)),
+        Text(_title, textAlign: TextAlign.center, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color, height: 1.4)),
         const SizedBox(height: 10),
-        FraudTypeBadge(fraudType: result.fraudType),
+        FraudTypeBadge(fraudType: result.fraudType, bilingual: true),
         const SizedBox(height: 20),
         ProbabilityMeter(probability: result.scamProbability, riskLevel: result.riskLevel),
         const SizedBox(height: 20),
 
         if (result.suspiciousKeywords.isNotEmpty) ...[
-          _SL('Suspicious Keywords'), const SizedBox(height: 8),
+          const _SL('🔎 Suspicious Words / అనుమానాస్పద పదాలు'),
+          const SizedBox(height: 8),
           Wrap(spacing: 8, runSpacing: 6, children: result.suspiciousKeywords.map((kw) =>
-              Chip(label: Text(kw, style: const TextStyle(color: Colors.white, fontSize: 12)), backgroundColor: const Color(0xFFB71C1C), side: BorderSide.none, padding: const EdgeInsets.symmetric(horizontal: 4), visualDensity: VisualDensity.compact)
+              Chip(label: Text(kw, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  backgroundColor: const Color(0xFFB71C1C), side: BorderSide.none,
+                  padding: const EdgeInsets.symmetric(horizontal: 4), visualDensity: VisualDensity.compact)
           ).toList()),
           const SizedBox(height: 16),
         ],
 
         if (result.originalText.isNotEmpty) ...[
-          _SL('Scanned Message'), const SizedBox(height: 8),
+          const _SL('📩 Scanned Message / చదివిన సందేశం'),
+          const SizedBox(height: 8),
           Container(
             width: double.infinity, constraints: const BoxConstraints(maxHeight: 160),
             padding: const EdgeInsets.all(12),
@@ -865,7 +1236,7 @@ class ScamAlertDialog extends StatelessWidget {
 
         const SizedBox(height: 20),
         Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
-          OutlinedButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close_rounded), label: const Text('Dismiss')),
+          OutlinedButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close_rounded), label: const Text('Dismiss / సరే')),
           if (showFull)
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade700, foregroundColor: Colors.white),
@@ -881,31 +1252,30 @@ class ScamAlertDialog extends StatelessWidget {
 class _SL extends StatelessWidget {
   final String text; const _SL(this.text);
   @override
-  Widget build(BuildContext context) => Align(alignment: Alignment.centerLeft, child: Text(text, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)));
+  Widget build(BuildContext context) => Align(alignment: Alignment.centerLeft,
+      child: Text(text, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)));
 }
 
 // ══════════════════════════════════════════════════════════════
-// INCOMING CALL BANNER
+// INCOMING CALL BANNER (in-app status bar)
 // ══════════════════════════════════════════════════════════════
 
 class _IncomingCallBanner extends StatelessWidget {
   final String number; final bool checking;
   const _IncomingCallBanner({required this.number, required this.checking});
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity, padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: Colors.blue.withOpacity(0.10), border: Border.all(color: Colors.blue.withOpacity(0.4)), borderRadius: BorderRadius.circular(12)),
-      child: Row(children: [
-        const Icon(Icons.phone_in_talk_rounded, color: Colors.blue, size: 20), const SizedBox(width: 10),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Incoming call — checking number…', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 13)),
-          if (number.isNotEmpty) Text(number, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-        ])),
-        if (checking) const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue)),
-      ]),
-    );
-  }
+  Widget build(BuildContext context) => Container(
+    width: double.infinity, padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(color: Colors.blue.withOpacity(0.10), border: Border.all(color: Colors.blue.withOpacity(0.4)), borderRadius: BorderRadius.circular(12)),
+    child: Row(children: [
+      const Icon(Icons.phone_in_talk_rounded, color: Colors.blue, size: 20), const SizedBox(width: 10),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Incoming call…', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 13)),
+        if (number.isNotEmpty) Text(number, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+      ])),
+      if (checking) const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue)),
+    ]),
+  );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -914,17 +1284,16 @@ class _IncomingCallBanner extends StatelessWidget {
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
-  @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  @override State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool   _scanning            = false;
-  String _status              = 'Tap the button to scan any message';
+  String _status              = L.t('status_idle');
   bool   _overlayEnabled      = false;
-  bool   _notificationEnabled = false;   // Issue 2 — persisted state
+  bool   _notificationEnabled = false;
   bool   _waitingForPerm      = false;
-  Timer? _notifDebounce;
+
   bool   _incomingCall   = false;
   bool   _checkingNumber = false;
   String _incomingNumber = '';
@@ -932,7 +1301,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   String _lastCallNumber = '';
 
   bool   _callDialogOpen         = false;
-  bool   _notificationDialogOpen = false;   // Improvement 1 — dialog flood guard
+  bool   _notificationDialogOpen = false;
   Timer? _callDebounce;
   bool   _picking                = false;
 
@@ -948,7 +1317,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadOverlayState();
-    _loadNotificationState();   // Issue 2 — load persisted notification state
+    _loadNotificationState();
     _initCallChannel();
     _initNotificationListener();
 
@@ -956,99 +1325,76 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (call.method == 'onScreenCaptured' && mounted) {
         final path = call.arguments as String?;
         if (path == null || path.isEmpty) return;
-
         final now = DateTime.now().millisecondsSinceEpoch;
-        if (_lastScreenshot == path) return;                 // duplicate path
-        if (now - _lastCaptureTime < 800) {                  // rapid duplicate frames
-          debugPrint('⚠️ Duplicate capture ignored');
-          return;
-        }
+        if (_lastScreenshot == path) return;
+        if (now - _lastCaptureTime < 800) { debugPrint('⚠️ Duplicate capture ignored'); return; }
         _lastScreenshot  = path;
         _lastCaptureTime = now;
-
-        debugPrint('📸 [NATIVE] Screenshot: $path');
         await Future.delayed(const Duration(milliseconds: 300));
         if (mounted) _appendAndOpenCrop(path);
       }
     });
   }
 
-  // ── Notification listener ────────────────────────────────────
+  // ── Notification listener ─────────────────────────────────────
 
   void _initNotificationListener() {
     _notificationChannel.setMethodCallHandler((call) async {
-      if (!_notificationEnabled) return;
       if (call.method != 'onNotificationMessage') return;
 
-      final data = Map<String, dynamic>.from(call.arguments as Map);
-      final app  = data['app']  as String? ?? '';
-      final text = data['text'] as String? ?? '';
+      final data  = Map<String, dynamic>.from(call.arguments as Map);
+      final app   = data['app']   as String? ?? '';
+      final title = data['title'] as String? ?? '';
+      final text  = data['text']  as String? ?? '';
 
-      debugPrint('📩 Notification from $app: $text');
+      debugPrint('📩 [$app] $title: $text');
 
-      // Issue 3 — filter noise before calling API
-      final lower = text.toLowerCase();
-
+      // ── Pre-filter: too short ────────────────────────────────
       if (text.length < 10) return;
 
-      if (lower.contains('typing')) return;
-      if (lower.contains('delivered')) return;
-      if (lower.contains('missed call')) return;
-      if (lower.contains('sent a photo')) return;
-      if (lower.contains('sent a video')) return;
-      if (lower.contains('sent a sticker')) return;
-      if (lower.contains('sent a gif')) return;            // shopping updates
-
-      // Improvement 2 — instant suspicious-link detection before AI
-      if (_containsSuspiciousLink(text)) {
-        // Fire quick overlay immediately — no AI wait needed
-        final fakeResult = _LocalEngine.detect(text);
-        await _showScamOverlay(fakeResult, source: app);
+      // ── INSTANT SCAM CHECK FIRST — always overrides safe-sender ─
+      // Scam signals (bit.ly, account blocked, KYC link, etc.) must
+      // be caught even if the notification appears to come from a
+      // known sender name, because scammers spoof contact names.
+      if (_NotifFilter.isInstantScam(text)) {
+        debugPrint('🚨 [NOTIF] Instant scam signal detected — bypassing safe filter');
+        final instant = ScanResult(
+          scamProbability: 90, isScam: true, riskLevel: RiskLevel.highRisk,
+          fraudType: FraudType.phishing,
+          suspiciousKeywords: ['suspicious link / pattern'],
+          explanation: 'Instant scam pattern detected.\nస్కామ్ pattern వెంటనే గుర్తించబడింది!',
+          preventionTips: [L.t('tip_link'), L.t('tip_otp')],
+          whatToDo: L.t('wtd_high'),
+          helpline: '1930', originalText: text, timestamp: DateTime.now(),
+        );
+        await HistoryService.save(instant);
+        await _showScamOverlay(instant, source: app.isNotEmpty ? app : 'Message');
+        return;
       }
 
-      _notifDebounce?.cancel();
+      // ── Pre-filter: known-safe sender / pattern ──────────────
+      // Only runs AFTER instant scam check so real scams are never skipped
+      if (_NotifFilter.isSafe(app, title, text)) {
+        debugPrint('✅ [NOTIF] Safe — skipped');
+        return;
+      }
 
-      _notifDebounce = Timer(const Duration(milliseconds: 500), () async {
+      // ── AI analysis ──────────────────────────────────────────
+      final result = await ApiService.analyze(text);
 
-        final result = await ApiService.analyze(text);
-
-        if (result.scamProbability >= 60 && !_notificationDialogOpen) {
-
-          _notificationDialogOpen = true;
-
-          await _showScamOverlay(
-            result,
-            source: app.isNotEmpty ? app : 'Message',
-          );
-
-          _notificationDialogOpen = false;
-        }
-
-      });
+      if (result.scamProbability >= 60 && !_notificationDialogOpen) {
+        _notificationDialogOpen = true;
+        await _showScamOverlay(result, source: app.isNotEmpty ? app : 'Message');
+        _notificationDialogOpen = false;
+      }
     });
   }
 
-  // Improvement 2 — known phishing patterns, instant detection
-  bool _containsSuspiciousLink(String text) {
-    final lower = text.toLowerCase();
-    return lower.contains('bit.ly')             ||
-        lower.contains('tinyurl')            ||
-        lower.contains('.xyz')               ||
-        lower.contains('.top')               ||
-        lower.contains('verify your account')||
-        lower.contains('click here')         ||
-        lower.contains('login link')         ||
-        lower.contains('account suspended');
-  }
-
-  // Issue 2 — load notification protection state from SharedPreferences
   Future<void> _loadNotificationState() async {
     final prefs = await SharedPreferences.getInstance();
-    final enabled = prefs.getBool(_kNotificationEnabled) ?? false;
-    if (mounted) setState(() => _notificationEnabled = enabled);
+    if (mounted) setState(() => _notificationEnabled = prefs.getBool(_kNotificationEnabled) ?? false);
   }
 
-  // Issue 2 — save notification protection state + open system settings
   Future<void> _enableNotificationProtection() async {
     const platform = MethodChannel('notification_settings');
     try {
@@ -1057,21 +1403,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       await prefs.setBool(_kNotificationEnabled, true);
       if (mounted) setState(() => _notificationEnabled = true);
     } catch (e) {
-      debugPrint('Error opening notification settings: $e');
-      _showSnack('Could not open notification settings. Enable manually in Settings > Apps > ScamShield.');
+      _showSnack(L.t('notif_settings'));
     }
+  }
+
+  /// Called when user picks a language in the toggle.
+  Future<void> _setLanguage(String langCode) async {
+    L.current = langCode;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('lang', langCode);
+    if (mounted) setState(() => _status = L.t('status_idle'));
   }
 
   @override
   void dispose() {
     _callDebounce?.cancel();
-    _notifDebounce?.cancel();
     OcrService.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  // ── Call channel ─────────────────────────────────────────────
+  // ── Call channel ──────────────────────────────────────────────
 
   void _initCallChannel() {
     _callStateChannel.setMethodCallHandler((call) async {
@@ -1118,24 +1470,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() => _checkingNumber = false);
 
-      // ── Always fire native overlay first ──────────────────────
-      // This appears OVER the phone dialler / lock screen so the
-      // user sees the warning even before accepting the call.
-      final level = switch (result.risk) {
-        NumberRisk.spam => 'highRisk',
-        NumberRisk.suspicious => 'suspicious',
-        NumberRisk.unknown => 'unknown',
-      };
+      // ── UNKNOWN: only show native overlay banner, no full screen ──
+      if (result.risk == NumberRisk.unknown) {
+        await _showCallAlert(number, result.risk.name, result.reason);
+        return;  // no in-app dialog for unknown — avoids annoying users
+      }
 
-      await _showCallAlert(number, level, result.reason);
+      // ── SPAM / SUSPICIOUS: fire native overlay + full warning screen ──
+      await _showCallAlert(number, result.risk.name, result.reason);
 
-      // ── In-app dialog only when ScamShield is in foreground ───
       _callDialogOpen = true;
       if (mounted) {
-        await showDialog(
-          context: context,
-          barrierDismissible: result.risk == NumberRisk.unknown,
-          builder: (_) => CallAlertDialog(result: result),
+        // Push full-screen animated warning
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => SpamCallWarningScreen(result: result)),
         );
       }
       _callDialogOpen = false;
@@ -1146,7 +1495,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ── Overlay ──────────────────────────────────────────────────
+  // ── Overlay ───────────────────────────────────────────────────
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) async {
@@ -1158,13 +1507,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final p = await SharedPreferences.getInstance();
         await p.setBool(_kOverlayEnabled, true);
         if (mounted) setState(() => _overlayEnabled = true);
-        _showSnack('✅ Floating button enabled!');
+        _showSnack('✅ Floating button enable అయింది!');
       } else {
-        _showSnack('Permission denied. Open Settings to grant it.');
+        _showSnack('Permission denied. Settings లో grant చేయండి.');
         if (mounted) {
           final open = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
-            title: const Text('Permission Required'),
-            content: const Text('Please allow "Display over other apps" for ScamShield in Settings.'),
+            title: const Text('Permission కావాలి'),
+            content: const Text('Settings లో "Display over other apps" allow చేయండి.'),
             actions: [
               TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
               TextButton(onPressed: () => Navigator.pop(context, true),  child: const Text('Open Settings')),
@@ -1194,7 +1543,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final p = await SharedPreferences.getInstance();
         await p.setBool(_kOverlayEnabled, true);
         setState(() => _overlayEnabled = true);
-        _showSnack('✅ Floating button enabled!');
+        _showSnack('✅ Floating button enable అయింది!');
       } else {
         _waitingForPerm = true;
         await _requestOverlayPermission();
@@ -1202,44 +1551,38 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ── Screenshot helpers ───────────────────────────────────────
+  // ── Screenshot helpers ────────────────────────────────────────
 
   Future<void> _scanScreen() async {
-    setState(() { _scanning = true; _status = 'Capturing screen…'; });
+    setState(() { _scanning = true; _status = 'Screen capture అవుతోంది…'; });
     try {
       final bytes = await _screenshotCtrl.capture();
-      if (bytes == null) { setState(() { _scanning = false; _status = 'Screenshot failed. Try again.'; }); return; }
+      if (bytes == null) { setState(() { _scanning = false; _status = 'Screenshot fail. Try again.'; }); return; }
       final dir  = await getTemporaryDirectory();
       final path = '${dir.path}/snap_${DateTime.now().millisecondsSinceEpoch}.png';
       await File(path).writeAsBytes(bytes);
-      setState(() { _scanning = false; _status = 'Tap the button to scan any message'; });
-      _pendingScreenshots.clear();
-      _cropScreenOpen = false;
+      setState(() { _scanning = false; _status = L.t('status_idle'); });
+      _pendingScreenshots.clear(); _cropScreenOpen = false;
       _openCropScreen([path], deleteTempAfter: true);
     } catch (e) {
       debugPrint('❌ [HOME] $e');
-      setState(() { _scanning = false; _status = 'Error capturing screen.'; });
+      setState(() { _scanning = false; _status = 'Error. Try again.'; });
     }
   }
 
   Future<void> _pickFromGallery() async {
-    if (_picking) return;
-    _picking = true;
+    if (_picking) return; _picking = true;
     try {
       final picked = await _picker.pickMultiImage() ?? [];
       if (!mounted || picked.isEmpty) return;
-      _pendingScreenshots.clear();
-      _cropScreenOpen = false;
+      _pendingScreenshots.clear(); _cropScreenOpen = false;
       _openCropScreen(picked.map((x) => x.path).toList());
-    } finally {
-      _picking = false;
-    }
+    } finally { _picking = false; }
   }
 
   void _appendAndOpenCrop(String path) {
     _pendingScreenshots.add(path);
     _pendingScreenshotCount.value = _pendingScreenshots.length;
-    debugPrint('📋 Screenshots: ${_pendingScreenshots.length}');
     if (_cropScreenOpen) return;
     _openCropScreen(List.from(_pendingScreenshots), deleteTempAfter: true);
   }
@@ -1249,13 +1592,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _cropScreenOpen = true;
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => CropScreen(
-        initialPaths: paths,
-        deleteTempAfter: deleteTempAfter,
-        onDone: () {
-          _pendingScreenshots.clear();
-          _pendingScreenshotCount.value = 0;
-          _cropScreenOpen = false;
-        },
+        initialPaths: paths, deleteTempAfter: deleteTempAfter,
+        onDone: () { _pendingScreenshots.clear(); _pendingScreenshotCount.value = 0; _cropScreenOpen = false; },
       ),
     ));
   }
@@ -1265,23 +1603,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
   }
 
-  Future<void> _toggleNotificationProtection() async {
-    final prefs = await SharedPreferences.getInstance();
-    final newState = !_notificationEnabled;
-
-    if (newState) {
-      const platform = MethodChannel('notification_settings');
-      await platform.invokeMethod('openNotificationAccess');
-    }
-
-    await prefs.setBool(_kNotificationEnabled, newState);
-
-    setState(() {
-      _notificationEnabled = newState;
-    });
-  }
-
-  // ── Build ─────────────────────────────────────────────────────
+  // ── Build ──────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -1292,7 +1614,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           title: const Text('🛡️ ScamShield', style: TextStyle(fontWeight: FontWeight.bold)),
           centerTitle: true,
           actions: [
-            IconButton(icon: const Icon(Icons.history_rounded), tooltip: 'Scan History',
+            IconButton(icon: const Icon(Icons.history_rounded), tooltip: 'History',
                 onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen()))),
           ],
         ),
@@ -1305,59 +1627,75 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               const SizedBox(height: 16),
             ],
 
+            // ── Hero icon ──────────────────────────────────────
             Container(
               padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.blue.withOpacity(0.1), border: Border.all(color: Colors.blue.withOpacity(0.4), width: 2)),
+              decoration: BoxDecoration(shape: BoxShape.circle,
+                  color: Colors.blue.withOpacity(0.1), border: Border.all(color: Colors.blue.withOpacity(0.4), width: 2)),
               child: const Icon(Icons.security_rounded, size: 80, color: Colors.blue),
             ),
-            const SizedBox(height: 18),
-            const Text('AI-Powered Scam Detection', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+            const SizedBox(height: 14),
+            const Text('🛡️ ScamShield', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            const Text('AI స్కామ్ రక్షణ • AI Scam Protection',
+                style: TextStyle(color: Colors.white54, fontSize: 13), textAlign: TextAlign.center),
             const SizedBox(height: 6),
-            Text(_status, style: const TextStyle(color: Colors.grey, fontSize: 14), textAlign: TextAlign.center),
-            const SizedBox(height: 32),
+            Text(_status, style: const TextStyle(color: Colors.grey, fontSize: 13), textAlign: TextAlign.center),
+            const SizedBox(height: 28),
 
+            // ── Scan buttons ───────────────────────────────────
             if (_scanning)
               const Column(children: [CircularProgressIndicator(), SizedBox(height: 12)])
             else ...[
               ElevatedButton.icon(
                 onPressed: _scanScreen,
                 icon: const Icon(Icons.document_scanner_rounded, size: 22),
-                label: const Text('SCAN NOW', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-                style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 56), backgroundColor: Colors.blue, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                label: Text(L.t('scan_now'), textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, height: 1.3)),
+                style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 60),
+                    backgroundColor: Colors.blue, foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
               ),
               const SizedBox(height: 12),
               ElevatedButton.icon(
                 onPressed: _picking ? null : _pickFromGallery,
                 icon: const Icon(Icons.photo_library_rounded, size: 22),
-                label: const Text('Scan from Gallery', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 52), backgroundColor: const Color(0xFF1565C0), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                label: Text(L.t('scan_gallery'), textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, height: 1.3)),
+                style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 54),
+                    backgroundColor: const Color(0xFF1565C0), foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
               ),
               const SizedBox(height: 12),
-              // Issue 1 — Floating button toggle
               _FloatingButtonToggle(enabled: _overlayEnabled, onToggle: _toggleOverlay),
               const SizedBox(height: 12),
-              // Issue 1 — Notification protection toggle (was missing from UI)
-              _NotificationToggle(
-                enabled: _notificationEnabled,
-                onToggle: _toggleNotificationProtection,
-              )
+              _NotificationToggle(enabled: _notificationEnabled, onEnable: _enableNotificationProtection),
+              const SizedBox(height: 12),
+              _LanguageToggle(current: L.current, onSelect: _setLanguage),
             ],
 
             const SizedBox(height: 28),
-            const Align(alignment: Alignment.centerLeft, child: Text('Detects:', style: TextStyle(color: Colors.grey, fontSize: 12))),
+
+            // ── Quick rules card ───────────────────────────────
+            _QuickRulesCard(),
+
+            const SizedBox(height: 20),
+            const Align(alignment: Alignment.centerLeft,
+                child: Text('ఇవి గుర్తిస్తుంది / Ye Pehchanta Hai:', style: TextStyle(color: Colors.grey, fontSize: 12))),
             const SizedBox(height: 8),
-            Wrap(spacing: 8, runSpacing: 8, children: [FraudType.upi, FraudType.job, FraudType.lottery, FraudType.phishing, FraudType.kyc].map((ft) => FraudTypeBadge(fraudType: ft)).toList()),
-            const SizedBox(height: 28),
+            Wrap(spacing: 8, runSpacing: 8, children: [FraudType.upi, FraudType.job, FraudType.lottery, FraudType.phishing, FraudType.kyc]
+                .map((ft) => FraudTypeBadge(fraudType: ft, bilingual: true)).toList()),
+            const SizedBox(height: 24),
 
             const _HomeHelplineBanner(),
 
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
             Wrap(spacing: 10, runSpacing: 8, alignment: WrapAlignment.center, children: const [
-              _InfoChip(icon: Icons.phone_android_rounded,       label: 'On-device OCR'),
-              _InfoChip(icon: Icons.lock_rounded,                label: 'Privacy First'),
-              _InfoChip(icon: Icons.bolt_rounded,                label: 'AI Powered'),
-              _InfoChip(icon: Icons.offline_bolt_rounded,        label: 'Offline Fallback'),
-              _InfoChip(icon: Icons.phone_in_talk_rounded,       label: 'Call Guard'),
+              _InfoChip(icon: Icons.phone_android_rounded,        label: 'On-device OCR'),
+              _InfoChip(icon: Icons.lock_rounded,                 label: 'Privacy First'),
+              _InfoChip(icon: Icons.bolt_rounded,                 label: 'AI Powered'),
+              _InfoChip(icon: Icons.offline_bolt_rounded,         label: 'Offline Fallback'),
+              _InfoChip(icon: Icons.phone_in_talk_rounded,        label: 'Call Guard'),
               _InfoChip(icon: Icons.notifications_active_rounded, label: 'Message Guard'),
             ]),
           ]),
@@ -1365,6 +1703,49 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+// ══════════════════════════════════════════════════════════════
+// QUICK RULES CARD  (big, emoji-heavy, rural-friendly)
+// ══════════════════════════════════════════════════════════════
+
+class _QuickRulesCard extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.red.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.red.withOpacity(0.3)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 20),
+          const SizedBox(width: 8),
+          Text(L.t('rules_title'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.amber)),
+        ]),
+        const SizedBox(height: 12),
+        _rule('🔢', 'rule_1', 'rule_1_sub'),
+        _rule('🏦', 'rule_2', 'rule_2_sub'),
+        _rule('🔗', 'rule_3', 'rule_3_sub'),
+        _rule('💸', 'rule_4', 'rule_4_sub'),
+        _rule('📞', 'rule_5', 'rule_5_sub'),
+      ]),
+    );
+  }
+
+  Widget _rule(String emoji, String mainKey, String subKey) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(emoji, style: const TextStyle(fontSize: 20)),
+      const SizedBox(width: 10),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(L.t(mainKey), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+        Text(L.t(subKey),  style: const TextStyle(color: Colors.white60, fontSize: 12)),
+      ])),
+    ]),
+  );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1377,18 +1758,22 @@ class _HomeHelplineBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: Colors.red.shade900.withOpacity(0.22), borderRadius: BorderRadius.circular(14), border: Border.all(color: Colors.red.shade700.withOpacity(0.5))),
+      decoration: BoxDecoration(
+          color: Colors.red.shade900.withOpacity(0.22),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.red.shade700.withOpacity(0.5))),
       child: Row(children: [
         const Icon(Icons.emergency_rounded, color: Colors.redAccent, size: 32),
         const SizedBox(width: 14),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text('Cybercrime Helpline', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.redAccent)),
           const Text('1930', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 4)),
-          Text('24×7 Free  •  cybercrime.gov.in', style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+          Text('24×7 Free • ఉచితం • cybercrime.gov.in', style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
         ])),
         ElevatedButton(
-          style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10)),
-          onPressed: () async { try { await launchUrl(Uri.parse('tel:1930')); } catch (e) { debugPrint('❌ tel:1930 $e'); } },
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10)),
+          onPressed: () async { try { await launchUrl(Uri.parse('tel:1930')); } catch (_) {} },
           child: const Text('Call\nNow', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
         ),
       ]),
@@ -1397,65 +1782,155 @@ class _HomeHelplineBanner extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════
-// FLOATING BUTTON TOGGLE
+// TOGGLES
 // ══════════════════════════════════════════════════════════════
 
 class _FloatingButtonToggle extends StatelessWidget {
   final bool enabled; final VoidCallback onToggle;
   const _FloatingButtonToggle({required this.enabled, required this.onToggle});
   @override
-  Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      ElevatedButton.icon(
-        onPressed: onToggle,
-        icon: const Icon(Icons.bubble_chart_rounded, size: 22),
-        label: Text(enabled ? 'Disable Floating Button' : 'Enable Floating Button', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 52), backgroundColor: enabled ? const Color(0xFFB71C1C) : Colors.deepPurple, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-      ),
-      const SizedBox(height: 6),
-      Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: enabled ? _C.safe : Colors.grey)),
-        const SizedBox(width: 6),
-        Text(enabled ? 'Floating button is active — tap to remove' : 'Tap to enable the floating scan button', style: TextStyle(fontSize: 11, color: enabled ? _C.safe : Colors.grey)),
-      ]),
-    ]);
-  }
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    ElevatedButton.icon(
+      onPressed: onToggle,
+      icon: const Icon(Icons.bubble_chart_rounded, size: 22),
+      label: Text(enabled ? L.t('float_off') : L.t('float_on'),
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+      style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 52),
+          backgroundColor: enabled ? const Color(0xFFB71C1C) : Colors.deepPurple,
+          foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+    ),
+    const SizedBox(height: 5),
+    Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: enabled ? _C.safe : Colors.grey)),
+      const SizedBox(width: 6),
+      Text(enabled ? 'Active — floating scan bubble visible' : 'Tap to enable floating scan bubble',
+          style: TextStyle(fontSize: 11, color: enabled ? _C.safe : Colors.grey)),
+    ]),
+  ]);
+}
+
+class _NotificationToggle extends StatelessWidget {
+  final bool enabled; final VoidCallback onEnable;
+  const _NotificationToggle({required this.enabled, required this.onEnable});
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    ElevatedButton.icon(
+      icon: Icon(enabled ? Icons.notifications_active_rounded : Icons.notifications_off_rounded, size: 22),
+      label: Text(enabled ? L.t('notif_on') : L.t('notif_off'),
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+      onPressed: enabled ? null : onEnable,
+      style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 52),
+          backgroundColor: enabled ? Colors.teal.shade700 : Colors.indigo,
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: Colors.teal.shade800, disabledForegroundColor: Colors.white70,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+    ),
+    const SizedBox(height: 5),
+    Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: enabled ? _C.safe : Colors.grey)),
+      const SizedBox(width: 6),
+      Text(enabled ? L.t('notif_on_hint') : L.t('notif_off_hint'),
+          style: TextStyle(fontSize: 11, color: enabled ? _C.safe : Colors.grey)),
+    ]),
+  ]);
 }
 
 // ══════════════════════════════════════════════════════════════
-// NOTIFICATION TOGGLE  (Issue 1 — fully wired up)
+// LANGUAGE TOGGLE  — Telugu / Hindi / English selector
+// Displayed on home screen so rural users can switch language
+// in one tap. Persisted in SharedPreferences across sessions.
 // ══════════════════════════════════════════════════════════════
 
-class _NotificationToggle extends StatelessWidget {
-  final bool         enabled;
-  final VoidCallback onToggle;
-  const _NotificationToggle({required this.enabled, required this.onToggle});
+class _LanguageToggle extends StatelessWidget {
+  final String current;
+  final void Function(String) onSelect;
+  const _LanguageToggle({required this.current, required this.onSelect});
+
+  static const _langs = [
+    ('te', '🇮🇳', 'తెలుగు',  'Telugu'),
+    ('hi', '🇮🇳', 'हिंदी',    'Hindi'),
+    ('en', '🇬🇧', 'English',  'English'),
+  ];
 
   @override
   Widget build(BuildContext context) {
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      ElevatedButton.icon(
-        icon: Icon(enabled ? Icons.notifications_active_rounded : Icons.notifications_off_rounded, size: 22),
-        label: Text(enabled ? 'Message Protection ON' : 'Enable Message Protection', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        onPressed: onToggle,
-        style: ElevatedButton.styleFrom(
-          minimumSize: const Size(double.infinity, 52),
-          backgroundColor: enabled ? Colors.teal.shade700 : Colors.indigo,
-          foregroundColor: Colors.white,
-          disabledBackgroundColor: Colors.teal.shade800,
-          disabledForegroundColor: Colors.white70,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      // Header
+      Row(children: [
+        const Icon(Icons.language_rounded, color: Colors.amber, size: 18),
+        const SizedBox(width: 8),
+        Text(L.t('lang_btn'),
+            style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 14)),
+      ]),
+      const SizedBox(height: 8),
+      // Three language buttons in a row
+      Row(children: _langs.map((lang) {
+        final code  = lang.$1;
+        final flag  = lang.$2;
+        final name  = lang.$3;
+        final sub   = lang.$4;
+        final sel   = current == code;
+        return Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: GestureDetector(
+              onTap: () => onSelect(code),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOut,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: sel ? Colors.amber.withOpacity(0.18) : Colors.white.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: sel ? Colors.amber : Colors.white24,
+                    width: sel ? 2 : 1,
+                  ),
+                  boxShadow: sel
+                      ? [BoxShadow(color: Colors.amber.withOpacity(0.25), blurRadius: 8)]
+                      : [],
+                ),
+                child: Column(children: [
+                  Text(flag, style: const TextStyle(fontSize: 22)),
+                  const SizedBox(height: 4),
+                  Text(name,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: sel ? FontWeight.bold : FontWeight.normal,
+                        color: sel ? Colors.amber : Colors.white70,
+                      )),
+                  if (code != 'en')
+                    Text(sub,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: sel ? Colors.amber.withOpacity(0.8) : Colors.white38,
+                        )),
+                  if (sel)
+                    Container(
+                      margin: const EdgeInsets.only(top: 4),
+                      width: 6, height: 6,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.amber,
+                      ),
+                    ),
+                ]),
+              ),
+            ),
+          ),
+        );
+      }).toList()),
+      const SizedBox(height: 5),
+      Center(
+        child: Text(
+          current == 'te'
+              ? 'ప్రస్తుత భాష: తెలుగు'
+              : current == 'hi'
+              ? 'वर्तमान भाषा: हिंदी'
+              : 'Current language: English',
+          style: TextStyle(fontSize: 11, color: Colors.amber.withOpacity(0.7)),
         ),
       ),
-      const SizedBox(height: 6),
-      Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: enabled ? _C.safe : Colors.grey)),
-        const SizedBox(width: 6),
-        Text(
-          enabled ? 'Scanning WhatsApp, SMS & Email automatically' : 'Tap to scan messages automatically',
-          style: TextStyle(fontSize: 11, color: enabled ? _C.safe : Colors.grey),
-        ),
-      ]),
     ]);
   }
 }
@@ -1464,16 +1939,14 @@ class _InfoChip extends StatelessWidget {
   final IconData icon; final String label;
   const _InfoChip({required this.icon, required this.label});
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.white24)),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 14, color: Colors.blue), const SizedBox(width: 6),
-        Text(label, style: const TextStyle(fontSize: 12, color: Colors.white70)),
-      ]),
-    );
-  }
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.white24)),
+    child: Row(mainAxisSize: MainAxisSize.min, children: [
+      Icon(icon, size: 14, color: Colors.blue), const SizedBox(width: 6),
+      Text(label, style: const TextStyle(fontSize: 12, color: Colors.white70)),
+    ]),
+  );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1485,8 +1958,7 @@ class CropScreen extends StatefulWidget {
   final VoidCallback? onDone;
   final bool deleteTempAfter;
   const CropScreen({super.key, required this.initialPaths, this.onDone, this.deleteTempAfter = false});
-  @override
-  State<CropScreen> createState() => _CropScreenState();
+  @override State<CropScreen> createState() => _CropScreenState();
 }
 
 class _CropScreenState extends State<CropScreen> {
@@ -1499,9 +1971,7 @@ class _CropScreenState extends State<CropScreen> {
   @override
   void initState() {
     super.initState();
-    _images = widget.initialPaths;   // direct reference — bubble appends are visible instantly
-
-    // Listen for new screenshots appended while CropScreen is open
+    _images = widget.initialPaths;
     _pendingScreenshotCount.addListener(() {
       if (!mounted) return;
       if (_images.length != _pendingScreenshots.length && _pendingScreenshots.isNotEmpty) {
@@ -1510,19 +1980,14 @@ class _CropScreenState extends State<CropScreen> {
     });
   }
 
-  @override
-  void dispose() { super.dispose(); }
-
-  void _finish() {
-    widget.onDone?.call();
-    if (mounted) Navigator.pop(context);
-  }
+  @override void dispose() { super.dispose(); }
+  void _finish() { widget.onDone?.call(); if (mounted) Navigator.pop(context); }
 
   Future<void> _crop(int i) async {
     final cropped = await ImageCropper().cropImage(
       sourcePath: _images[i],
       uiSettings: [AndroidUiSettings(
-        toolbarTitle: 'Crop Message Area', toolbarColor: Colors.black,
+        toolbarTitle: 'Message area crop చేయండి', toolbarColor: Colors.black,
         toolbarWidgetColor: Colors.white, activeControlsWidgetColor: Colors.blue,
         lockAspectRatio: false, hideBottomControls: false,
         initAspectRatio: CropAspectRatioPreset.original,
@@ -1534,21 +1999,18 @@ class _CropScreenState extends State<CropScreen> {
 
   void _remove(int i) {
     if (_images.length == 1) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('At least one image is required.'), duration: Duration(seconds: 2)));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('కనీసం ఒక image కావాలి.'), duration: Duration(seconds: 2)));
       return;
     }
     setState(() => _images.removeAt(i));
   }
 
   Future<void> _addFromGallery() async {
-    if (_addingImage) return;
-    _addingImage = true;
+    if (_addingImage) return; _addingImage = true;
     try {
       final p = await _picker.pickImage(source: ImageSource.gallery);
       if (p != null && mounted) setState(() => _images.add(p.path));
-    } finally {
-      _addingImage = false;
-    }
+    } finally { _addingImage = false; }
   }
 
   Future<void> _analyze() async {
@@ -1556,18 +2018,15 @@ class _CropScreenState extends State<CropScreen> {
     setState(() { _analyzing = true; _status = 'Starting…'; });
     try {
       final result = await _runPipeline(
-        imagePaths: _images,
-        context: context,
+        imagePaths: _images, context: context,
         setStatus: (s) { if (mounted) setState(() => _status = s); },
         deleteTempAfter: widget.deleteTempAfter,
-        showOverlay: false,
       );
       if (result == null && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No text found. Try cropping more tightly around the message.')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Text కనిపించలేదు. Message area దగ్గరగా crop చేయండి.')));
       }
       if (mounted) _finish();
     } catch (e) {
-      debugPrint('❌ [CROP] $e');
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Analysis failed: $e')));
     } finally {
       if (mounted) setState(() { _analyzing = false; _status = ''; });
@@ -1577,16 +2036,12 @@ class _CropScreenState extends State<CropScreen> {
   @override
   Widget build(BuildContext context) {
     return WillPopScope(
-      onWillPop: () async {
-        if (_analyzing) return false;
-        _finish();
-        return false;
-      },
+      onWillPop: () async { if (_analyzing) return false; _finish(); return false; },
       child: Scaffold(
         appBar: AppBar(
-          title: Text('Review Screenshot${_images.length > 1 ? "s (${_images.length})" : ""}', style: const TextStyle(fontWeight: FontWeight.bold)),
+          title: Text('Screenshot Review${_images.length > 1 ? " (${_images.length})" : ""}', style: const TextStyle(fontWeight: FontWeight.bold)),
           leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: _analyzing ? null : _finish),
-          actions: [IconButton(icon: const Icon(Icons.add_photo_alternate_rounded), tooltip: 'Add another screenshot', onPressed: (_analyzing || _addingImage) ? null : _addFromGallery)],
+          actions: [IconButton(icon: const Icon(Icons.add_photo_alternate_rounded), onPressed: (_analyzing || _addingImage) ? null : _addFromGallery)],
         ),
         body: Column(children: [
           Container(
@@ -1594,13 +2049,13 @@ class _CropScreenState extends State<CropScreen> {
             color: Colors.blue.withOpacity(0.1),
             child: Text(
               _images.length == 1
-                  ? '💡 Crop to show only the suspicious message, then tap Analyze.'
-                  : '💡 ${_images.length} screenshots loaded. Crop each one, then tap Analyze.',
+                  ? L.t('crop_hint_1')
+                  : '💡 ${_images.length} screenshots లోడ్ అయ్యాయి. Crop చేసి Analyze నొక్కండి.',
               style: const TextStyle(fontSize: 12, color: Colors.white70), textAlign: TextAlign.center,
             ),
           ),
           Expanded(child: _images.isEmpty
-              ? const Center(child: Text('No images. Go back and try again.', style: TextStyle(color: Colors.grey)))
+              ? const Center(child: Text('No images. Back వెళ్ళి try చేయండి.', style: TextStyle(color: Colors.grey)))
               : ListView.builder(
             padding: const EdgeInsets.all(12), itemCount: _images.length,
             itemBuilder: (_, i) => Card(
@@ -1616,7 +2071,6 @@ class _CropScreenState extends State<CropScreen> {
                       TextButton.icon(onPressed: _analyzing ? null : () => _crop(i), icon: const Icon(Icons.crop_rounded, size: 18), label: const Text('Crop')),
                       const SizedBox(width: 4),
                       TextButton.icon(onPressed: _analyzing ? null : () => _remove(i), icon: const Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent), label: const Text('Remove', style: TextStyle(color: Colors.redAccent))),
-                      const SizedBox(width: 4),
                       if (i == _images.length - 1)
                         TextButton.icon(onPressed: (_analyzing || _addingImage) ? null : _addFromGallery, icon: const Icon(Icons.add_rounded, size: 18, color: Colors.green), label: const Text('Add More', style: TextStyle(color: Colors.green))),
                     ])),
@@ -1624,13 +2078,18 @@ class _CropScreenState extends State<CropScreen> {
             ),
           )),
           if (_status.isNotEmpty)
-            Padding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4), child: Text(_status, style: const TextStyle(color: Colors.blue, fontSize: 13), textAlign: TextAlign.center)),
+            Padding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Text(_status, style: const TextStyle(color: Colors.blue, fontSize: 13), textAlign: TextAlign.center)),
           SafeArea(child: Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             child: ElevatedButton.icon(
               onPressed: (_analyzing || _images.isEmpty) ? null : _analyze,
               icon: _analyzing ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.search_rounded, size: 22),
-              label: Text(_analyzing ? (_status.isNotEmpty ? _status : 'Analyzing…') : 'Analyze for Scam', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-              style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 56), backgroundColor: Colors.blue, foregroundColor: Colors.white, disabledBackgroundColor: Colors.blue.withOpacity(0.45), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+              label: Text(_analyzing ? (_status.isNotEmpty ? _status : 'Analyzing…') : L.t('analyze_btn'),
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 56),
+                  backgroundColor: Colors.blue, foregroundColor: Colors.white,
+                  disabledBackgroundColor: Colors.blue.withOpacity(0.45),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
             ),
           )),
         ]),
@@ -1645,16 +2104,14 @@ class _CropScreenState extends State<CropScreen> {
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
-  @override
-  State<HistoryScreen> createState() => _HistoryScreenState();
+  @override State<HistoryScreen> createState() => _HistoryScreenState();
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
   List<ScanResult> _history = [];
   bool _loading = true;
 
-  @override
-  void initState() { super.initState(); _load(); }
+  @override void initState() { super.initState(); _load(); }
 
   Future<void> _load() async {
     final h = await HistoryService.load();
@@ -1677,51 +2134,42 @@ class _HistoryScreenState extends State<HistoryScreen> {
         title: Text('Scan History (${_history.length})', style: const TextStyle(fontWeight: FontWeight.bold)), centerTitle: true,
         actions: [
           if (_history.isNotEmpty)
-            IconButton(
-              icon: const Icon(Icons.delete_outline_rounded), tooltip: 'Clear All',
-              onPressed: () async {
-                final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
-                  title: const Text('Clear History?'),
-                  content: const Text('All scan records will be permanently deleted.'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                    TextButton(onPressed: () => Navigator.pop(context, true),  child: const Text('Delete All', style: TextStyle(color: Colors.red))),
-                  ],
-                ));
-                if (ok == true) _clear();
-              },
-            ),
+            IconButton(icon: const Icon(Icons.delete_outline_rounded), tooltip: 'Clear All',
+                onPressed: () async {
+                  final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
+                    title: const Text('History Delete చేయాలా?'),
+                    content: const Text('అన్ని scan records permanently delete అవుతాయి.'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                      TextButton(onPressed: () => Navigator.pop(context, true),  child: const Text('Delete All', style: TextStyle(color: Colors.red))),
+                    ],
+                  ));
+                  if (ok == true) _clear();
+                }),
         ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _history.isEmpty
-          ? const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(Icons.history_rounded, size: 64, color: Colors.grey), SizedBox(height: 16),
-        Text('No scans yet',                    style: TextStyle(color: Colors.grey, fontSize: 16)),
-        SizedBox(height: 6),
-        Text('Scan a message to see results here.', style: TextStyle(color: Colors.grey, fontSize: 13)),
+          ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        const Icon(Icons.history_rounded, size: 64, color: Colors.grey), const SizedBox(height: 16),
+        Text(L.t('history_empty'), style: const TextStyle(color: Colors.grey, fontSize: 16)),
+        const SizedBox(height: 6),
+        Text(L.t('history_hint'), style: const TextStyle(color: Colors.grey, fontSize: 13)),
       ]))
           : Column(children: [
         if (highCount > 0)
-          Container(
-            margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(color: Colors.red.withOpacity(0.1), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.red.withOpacity(0.35))),
-            child: Row(children: [
-              const Icon(Icons.warning_rounded, color: Colors.red, size: 18), const SizedBox(width: 8),
-              Text('$highCount high-risk message${highCount > 1 ? "s" : ""} in history', style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 13)),
-            ]),
-          ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-          child: Wrap(spacing: 8, runSpacing: 6, children: [
-            _SC(label: 'Total',      value: _history.length.toString(), color: Colors.white70),
-            _SC(label: 'High Risk',  value: highCount.toString(),       color: _C.highRisk),
-            _SC(label: 'Suspicious', value: suspCount.toString(),       color: _C.suspicious),
-            _SC(label: 'Safe',       value: safeCount.toString(),       color: _C.safe),
-          ]),
-        ),
+          Container(margin: const EdgeInsets.fromLTRB(12, 12, 12, 4), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(color: Colors.red.withOpacity(0.1), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.red.withOpacity(0.35))),
+              child: Row(children: [const Icon(Icons.warning_rounded, color: Colors.red, size: 18), const SizedBox(width: 8),
+                Text('$highCount అధిక ప్రమాదం / high-risk message${highCount > 1 ? "s" : ""}', style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 13))])),
+        Padding(padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+            child: Wrap(spacing: 8, runSpacing: 6, children: [
+              _SC(label: 'Total',           value: _history.length.toString(), color: Colors.white70),
+              _SC(label: '🚨 High Risk',    value: highCount.toString(),       color: _C.highRisk),
+              _SC(label: '⚠️ Suspicious',  value: suspCount.toString(),       color: _C.suspicious),
+              _SC(label: '✅ Safe',         value: safeCount.toString(),       color: _C.safe),
+            ])),
         Expanded(child: ListView.builder(
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
           itemCount: _history.length,
@@ -1741,7 +2189,7 @@ class _SC extends StatelessWidget {
     decoration: BoxDecoration(color: color.withOpacity(0.08), borderRadius: BorderRadius.circular(8), border: Border.all(color: color.withOpacity(0.3))),
     child: Column(mainAxisSize: MainAxisSize.min, children: [
       Text(value, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 16)),
-      Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10)),
+      Text(label,  style: const TextStyle(color: Colors.grey, fontSize: 10)),
     ]),
   );
 }
@@ -1753,7 +2201,7 @@ class _HistoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = result.riskLevel.color;
-    final title = result.riskLevel == RiskLevel.highRisk ? '🚨 Scam' : result.riskLevel == RiskLevel.suspicious ? '⚠️ Suspicious' : '✅ Safe';
+    final title = result.riskLevel == RiskLevel.highRisk ? '🚨 Scam!' : result.riskLevel == RiskLevel.suspicious ? '⚠️ అనుమానాస్పద' : '✅ Safe';
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: color.withOpacity(0.35))),
@@ -1769,7 +2217,8 @@ class _HistoryCard extends StatelessWidget {
         ]),
         subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const SizedBox(height: 3),
-          Text(result.originalText.length > 70 ? '${result.originalText.substring(0, 70)}…' : result.originalText, style: const TextStyle(fontSize: 12, color: Colors.grey), maxLines: 2, overflow: TextOverflow.ellipsis),
+          Text(result.originalText.length > 70 ? '${result.originalText.substring(0, 70)}…' : result.originalText,
+              style: const TextStyle(fontSize: 12, color: Colors.grey), maxLines: 2, overflow: TextOverflow.ellipsis),
           const SizedBox(height: 3),
           Text(_fmt(result.timestamp), style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
         ]),

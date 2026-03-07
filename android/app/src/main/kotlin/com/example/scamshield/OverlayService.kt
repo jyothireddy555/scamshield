@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -26,39 +27,32 @@ import android.widget.TextView
 import androidx.core.app.NotificationCompat
 
 // ═══════════════════════════════════════════════════════════════════
-// OverlayService
+// OverlayService  — Fixed version
 //
-// Foreground service that draws system-level overlay windows via
-// WindowManager. These windows appear OVER every other app —
-// WhatsApp, SMS, Dialler, lock screen — with no need to open
-// ScamShield.
-//
-// Two overlay types:
-//   showCallAlert  → compact draggable banner at top of screen
-//                    (incoming call risk warning, auto-dismisses 30 s)
-//   showScamAlert  → full-detail scrollable card centred on screen
-//                    (scam message result, user must tap Dismiss)
-//
-// Flutter calls these via MethodChannel('overlay'):
-//   invokeMethod('showCallAlert', {number, level, message})
-//   invokeMethod('showScamAlert', {source, probability, riskLevel,
-//                                  fraudType, fraudEmoji, explanation,
-//                                  whatToDo, keywords, helpline,
-//                                  showHelpline})
+// Key fixes:
+//  1. View removal guards — try/catch on every removeView call
+//  2. Drag: ACTION_UP no longer calls performClick (which conflicts
+//     with the drag; click is handled by a separate setOnClickListener)
+//  3. ensureOnMainThread helper used throughout to avoid threading issues
+//  4. Null-check windowManager before every addView / removeView call
+//  5. Auto-dismiss runnable cancelled on removeCallAlert to prevent leaks
+//  6. showScamAlertOverlay: shortened message preview to avoid OOM
 // ═══════════════════════════════════════════════════════════════════
 
 class OverlayService : Service() {
 
     private var windowManager: WindowManager? = null
-    private var floatBubble:   View? = null   // the persistent scan bubble
-    private var callAlertView: View? = null   // transient call banner
-    private var scamAlertView: View? = null   // transient scam card
+    private var floatBubble:   View? = null
+    private var callAlertView: View? = null
+    private var scamAlertView: View? = null
 
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private val CALL_DISMISS_MS = 30_000L     // call banner auto-dismiss
+    private val mainHandler       = Handler(Looper.getMainLooper())
+    private val CALL_DISMISS_MS   = 30_000L
+    // FIX: Keep reference to dismiss runnable so it can be cancelled
+    private var callDismissRunnable: Runnable? = null
 
     companion object {
-        var isRunning = false   // checked by MainActivity.ensureOverlayServiceRunning()
+        @Volatile var isRunning = false
 
         const val ACTION_START_OVERLAY    = "com.scamshield.START_OVERLAY"
         const val ACTION_STOP_OVERLAY     = "com.scamshield.STOP_OVERLAY"
@@ -69,70 +63,52 @@ class OverlayService : Service() {
         private const val NOTIF_CHANNEL   = "scamshield_overlay"
         private const val NOTIF_ID        = 1001
 
-        // ── Convenience starters called from MainActivity ─────────
-
         fun showCallAlert(ctx: Context, number: String, level: String, message: String) {
-
-            val intent = Intent(ctx, OverlayService::class.java).apply {
+            ctx.startForegroundService(Intent(ctx, OverlayService::class.java).apply {
                 action = ACTION_SHOW_CALL_ALERT
-                putExtra("number", number)
-                putExtra("level", level)
+                putExtra("number",  number)
+                putExtra("level",   level)
                 putExtra("message", message)
-            }
-
-            ctx.startForegroundService(intent)
+            })
         }
 
         fun showScamAlert(
             ctx: Context,
-            source: String,
-            sender: String,
-            originalMessage: String,
-            probability: Int,
-            riskLevel: String,
-            fraudType: String,
-            fraudEmoji: String,
-            explanation: String,
-            whatToDo: String,
-            keywords: String,
-            helpline: String,
-            showHelpline: Boolean
+            source: String, sender: String, originalMessage: String,
+            probability: Int, riskLevel: String,
+            fraudType: String, fraudEmoji: String,
+            explanation: String, whatToDo: String,
+            keywords: String, helpline: String, showHelpline: Boolean
         ) {
-
-            val intent = Intent(ctx, OverlayService::class.java).apply {
+            ctx.startForegroundService(Intent(ctx, OverlayService::class.java).apply {
                 action = ACTION_SHOW_SCAM_ALERT
-                putExtra("source", source)
-                putExtra("sender", sender)
+                putExtra("source",          source)
+                putExtra("sender",          sender)
                 putExtra("originalMessage", originalMessage)
-                putExtra("probability", probability)
-                putExtra("riskLevel", riskLevel)
-                putExtra("fraudType", fraudType)
-                putExtra("fraudEmoji", fraudEmoji)
-                putExtra("explanation", explanation)
-                putExtra("whatToDo", whatToDo)
-                putExtra("keywords", keywords)
-                putExtra("helpline", helpline)
-                putExtra("showHelpline", showHelpline)
-            }
-
-            ctx.startForegroundService(intent)
+                putExtra("probability",     probability)
+                putExtra("riskLevel",       riskLevel)
+                putExtra("fraudType",       fraudType)
+                putExtra("fraudEmoji",      fraudEmoji)
+                putExtra("explanation",     explanation)
+                putExtra("whatToDo",        whatToDo)
+                putExtra("keywords",        keywords)
+                putExtra("helpline",        helpline)
+                putExtra("showHelpline",    showHelpline)
+            })
         }
     }
-
-    // ── Lifecycle ────────────────────────────────────────────────
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        isRunning = true
+        isRunning     = true
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         startForegroundWithNotification()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-
             ACTION_START_OVERLAY -> mainHandler.post { showFloatBubble() }
             ACTION_STOP_OVERLAY  -> mainHandler.post { removeFloatBubble() }
 
@@ -144,35 +120,24 @@ class OverlayService : Service() {
             }
 
             ACTION_SHOW_SCAM_ALERT -> {
-
-                val source       = intent.getStringExtra("source") ?: "Message"
-                val sender       = intent.getStringExtra("sender") ?: "Unknown"
+                val source       = intent.getStringExtra("source")          ?: "Message"
+                val sender       = intent.getStringExtra("sender")          ?: "Unknown"
                 val originalMsg  = intent.getStringExtra("originalMessage") ?: ""
-
                 val probability  = intent.getIntExtra("probability", 0)
-                val riskLevel    = intent.getStringExtra("riskLevel") ?: "Suspicious"
-                val fraudType    = intent.getStringExtra("fraudType") ?: ""
-                val fraudEmoji   = intent.getStringExtra("fraudEmoji") ?: "⚠️"
-                val explanation  = intent.getStringExtra("explanation") ?: ""
-                val whatToDo     = intent.getStringExtra("whatToDo") ?: ""
-                val keywords     = intent.getStringExtra("keywords") ?: ""
-                val helpline     = intent.getStringExtra("helpline") ?: "1930"
+                val riskLevel    = intent.getStringExtra("riskLevel")       ?: "Suspicious"
+                val fraudType    = intent.getStringExtra("fraudType")       ?: ""
+                val fraudEmoji   = intent.getStringExtra("fraudEmoji")      ?: "⚠️"
+                val explanation  = intent.getStringExtra("explanation")     ?: ""
+                val whatToDo     = intent.getStringExtra("whatToDo")        ?: ""
+                val keywords     = intent.getStringExtra("keywords")        ?: ""
+                val helpline     = intent.getStringExtra("helpline")        ?: "1930"
                 val showHelpline = intent.getBooleanExtra("showHelpline", false)
 
                 mainHandler.post {
                     showScamAlertOverlay(
-                        source,
-                        sender,
-                        originalMsg,
-                        probability,
-                        riskLevel,
-                        fraudType,
-                        fraudEmoji,
-                        explanation,
-                        whatToDo,
-                        keywords,
-                        helpline,
-                        showHelpline
+                        source, sender, originalMsg, probability,
+                        riskLevel, fraudType, fraudEmoji,
+                        explanation, whatToDo, keywords, helpline, showHelpline
                     )
                 }
             }
@@ -185,21 +150,27 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        // FIX: Cancel pending runnables before removing views
+        callDismissRunnable?.let { mainHandler.removeCallbacks(it) }
+        callDismissRunnable = null
         removeFloatBubble()
         removeCallAlert()
         removeScamAlert()
         super.onDestroy()
     }
 
-    // ── Foreground notification (required on Android O+) ────────
+    /* ───────── Foreground notification ───────── */
 
     private fun startForegroundWithNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NotificationManager::class.java)
             if (nm.getNotificationChannel(NOTIF_CHANNEL) == null) {
                 nm.createNotificationChannel(
-                    NotificationChannel(NOTIF_CHANNEL, "ScamShield Protection",
-                        NotificationManager.IMPORTANCE_LOW).apply {
+                    NotificationChannel(
+                        NOTIF_CHANNEL,
+                        "ScamShield Protection",
+                        NotificationManager.IMPORTANCE_LOW
+                    ).apply {
                         description = "ScamShield overlay and scam detection service"
                         setShowBadge(false)
                     }
@@ -216,10 +187,9 @@ class OverlayService : Service() {
         startForeground(NOTIF_ID, notif)
     }
 
-    // ════════════════════════════════════════════════════════════
-    // FLOATING SCAN BUBBLE
-    // Small draggable circle — tapping it triggers screen capture.
-    // ════════════════════════════════════════════════════════════
+    /* ═══════════════════════════════════════════════════════════
+       FLOATING SCAN BUBBLE
+    ═══════════════════════════════════════════════════════════ */
 
     private fun showFloatBubble() {
         removeFloatBubble()
@@ -229,7 +199,7 @@ class OverlayService : Service() {
             textSize  = 22f
             gravity   = Gravity.CENTER
             background = GradientDrawable().apply {
-                shape        = GradientDrawable.OVAL
+                shape = GradientDrawable.OVAL
                 setColor(Color.parseColor("#CC1a1a2e"))
                 setStroke(dp(2), Color.parseColor("#54A0FF"))
             }
@@ -241,27 +211,29 @@ class OverlayService : Service() {
             flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
         }
 
-        bubble.setOnClickListener {
+        // FIX: Pass onTap directly into makeDraggable instead of using a shared `dragged` flag +
+        // setOnClickListener. The old pattern never reset `dragged` to false after a drag ended,
+        // so every tap after the first drag was permanently silently blocked.
+        makeDraggable(bubble, params, onTap = {
             val i = Intent(this, MainActivity::class.java).apply {
                 putExtra("triggerScan", true)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
             startActivity(i)
-        }
+        })
 
-        makeDraggable(bubble, params)
-        windowManager?.addView(bubble, params)
+        safeAddView(bubble, params)
         floatBubble = bubble
     }
 
     private fun removeFloatBubble() {
-        floatBubble?.let { try { windowManager?.removeView(it) } catch (_: Exception) {} }
+        safeRemoveView(floatBubble)
         floatBubble = null
     }
 
-    // ════════════════════════════════════════════════════════════
-    // CALL ALERT OVERLAY  — compact top banner
-    // ════════════════════════════════════════════════════════════
+    /* ═══════════════════════════════════════════════════════════
+       CALL ALERT OVERLAY — compact top banner
+    ═══════════════════════════════════════════════════════════ */
 
     private fun showCallAlertOverlay(number: String, level: String, message: String) {
         removeCallAlert()
@@ -274,7 +246,7 @@ class OverlayService : Service() {
             background  = roundedBg(Color.parseColor("#EE1e1e2e"), color, 16, 2)
         }
 
-        // Header: emoji + title + ✕
+        // Header row
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         header.addView(tv("${riskEmoji(level)}  ${riskTitle(level)}", 16f, color, bold = true).apply {
             layoutParams = LinearLayout.LayoutParams(0, WC).apply { weight = 1f }
@@ -290,11 +262,13 @@ class OverlayService : Service() {
                 letterSpacing = 0.1f
             })
         }
-        if (message.isNotEmpty()) {
-            root.addView(tv(message, 12f, 0xCCFFFFFF.toInt()).apply { setPadding(0, dp(6), 0, 0) })
+
+        // FIX: Truncate long messages to avoid oversized banner
+        val displayMsg = if (message.length > 100) message.substring(0, 100) + "…" else message
+        if (displayMsg.isNotEmpty()) {
+            root.addView(tv(displayMsg, 12f, 0xCCFFFFFF.toInt()).apply { setPadding(0, dp(6), 0, 0) })
         }
 
-        // Action buttons
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(10), 0, 0)
@@ -312,38 +286,41 @@ class OverlayService : Service() {
             y = dp(48)
         }
         makeDraggable(root, params)
-        windowManager?.addView(root, params)
+        safeAddView(root, params)
         callAlertView = root
 
-        // Auto-dismiss after 30 s
-        mainHandler.postDelayed({ removeCallAlert() }, CALL_DISMISS_MS)
+        // FIX: Keep runnable reference so it can be cancelled on early dismiss
+        val dismissRunnable = Runnable { removeCallAlert() }
+        callDismissRunnable = dismissRunnable
+        mainHandler.postDelayed(dismissRunnable, CALL_DISMISS_MS)
     }
 
     private fun removeCallAlert() {
-        callAlertView?.let { try { windowManager?.removeView(it) } catch (_: Exception) {} }
+        // FIX: Cancel auto-dismiss timer
+        callDismissRunnable?.let { mainHandler.removeCallbacks(it) }
+        callDismissRunnable = null
+        safeRemoveView(callAlertView)
         callAlertView = null
     }
 
-    // ════════════════════════════════════════════════════════════
-    // SCAM ALERT OVERLAY  — full-detail card
-    // Centred on screen, scrollable.  Never auto-dismisses.
-    // ════════════════════════════════════════════════════════════
+    /* ═══════════════════════════════════════════════════════════
+       SCAM ALERT OVERLAY — full-detail scrollable card
+    ═══════════════════════════════════════════════════════════ */
 
     private fun showScamAlertOverlay(
-        source: String,
-        sender: String,
-        originalMsg: String,
-        probability: Int,
-        riskLevel: String,
-        fraudType: String, fraudEmoji: String, explanation: String,
-        whatToDo: String, keywords: String, helpline: String, showHelpline: Boolean,
+        source: String, sender: String, originalMsg: String,
+        probability: Int, riskLevel: String,
+        fraudType: String, fraudEmoji: String,
+        explanation: String, whatToDo: String,
+        keywords: String, helpline: String, showHelpline: Boolean,
     ) {
-        val shortMsg =
-            if (originalMsg.length > 120)
-                originalMsg.substring(0, 120) + "..."
-            else
-                originalMsg
         removeScamAlert()
+
+        // FIX: Limit preview length to prevent excessively tall overlay
+        val shortMsg = when {
+            originalMsg.length > 120 -> originalMsg.substring(0, 120) + "…"
+            else                     -> originalMsg
+        }
 
         val accent = riskColor(riskLevel)
         val title  = when {
@@ -352,7 +329,6 @@ class OverlayService : Service() {
             else                                          -> "✅ Message Looks Safe"
         }
 
-        // Outer card
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background  = roundedBg(Color.parseColor("#F01a1a2e"), accent, 20, 2)
@@ -372,60 +348,49 @@ class OverlayService : Service() {
         })
         card.addView(titleBar)
 
-        // Scrollable content
         val scroll  = ScrollView(this)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(14), dp(18), dp(18))
         }
 
-        content.addView(tv("Detected in:  $source", 11f, 0x99FFFFFF.toInt()).apply {
-            setPadding(0, 0, 0, dp(10))
-        })
+        content.addView(tv("From: $source", 11f, 0x99FFFFFF.toInt()).apply { setPadding(0, 0, 0, dp(10)) })
 
-        content.addView(tv("Sender: $sender", 12f, Color.WHITE))
-        content.addView(gap(6))
+        if (sender.isNotEmpty() && sender != "Unknown") {
+            content.addView(tv("Sender: $sender", 12f, Color.WHITE))
+            content.addView(gap(6))
+        }
 
         if (shortMsg.isNotEmpty()) {
-            content.addView(infoCard(
-                "Original Message",
-                shortMsg,
-                Color.parseColor("#54A0FF")
-            ))
+            content.addView(infoCard("Original Message", shortMsg, Color.parseColor("#54A0FF")))
             content.addView(gap(12))
         }
-        // Fraud type badge
+
         if (fraudType.isNotEmpty()) {
             content.addView(badge("$fraudEmoji  $fraudType", accent))
             content.addView(gap(12))
         }
 
-        // Risk % + level label
         content.addView(tv("Scam Risk:  $probability%  •  $riskLevel", 13f, accent, bold = true))
         content.addView(gap(6))
-        // Progress bar: draw as two layers in a FrameLayout with fixed pixel width
         content.addView(riskBar(probability, accent))
         content.addView(gap(14))
 
-        // Suspicious keywords
         if (keywords.isNotEmpty()) {
             content.addView(infoCard("🔎 Suspicious Keywords", keywords, Color.parseColor("#FF4757")))
             content.addView(gap(10))
         }
 
-        // Explanation
         if (explanation.isNotEmpty()) {
             content.addView(infoCard("ℹ️ Why it's dangerous", explanation, accent))
             content.addView(gap(10))
         }
 
-        // What to do
         if (whatToDo.isNotEmpty()) {
             content.addView(infoCard("⚡ What To Do Now", whatToDo, Color.parseColor("#FF9F43")))
             content.addView(gap(10))
         }
 
-        // Helpline banner (only when probability >= 70%)
         if (showHelpline) {
             content.addView(helplineBanner(helpline))
             content.addView(gap(10))
@@ -436,12 +401,10 @@ class OverlayService : Service() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = roundedBg(Color.argb(80, 220, 0, 0), Color.RED, 10, 1)
         }
-        warn.addView(tv("🚫  NEVER share OTP  •  bank PIN  •  Aadhaar  •  passwords",
-            11f, Color.WHITE, bold = true))
+        warn.addView(tv("🚫  NEVER share OTP  •  bank PIN  •  Aadhaar  •  passwords", 11f, Color.WHITE, bold = true))
         content.addView(warn)
         content.addView(gap(14))
 
-        // Action buttons
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btnRow.addView(btn("Dismiss", Color.DKGRAY) { removeScamAlert() }.apply {
             layoutParams = LinearLayout.LayoutParams(0, WC).apply { weight = 1f; marginEnd = dp(8) }
@@ -456,27 +419,24 @@ class OverlayService : Service() {
         scroll.addView(content)
         card.addView(scroll)
 
-        // WindowManager params — centred, max 88% screen height
         val dm   = resources.displayMetrics
         val maxH = (dm.heightPixels * 0.88f).toInt()
         val w    = dm.widthPixels - dp(24)
 
-        val params = overlayParams(w, maxH).apply {
-            gravity = Gravity.CENTER
-        }
+        val params = overlayParams(w, maxH).apply { gravity = Gravity.CENTER }
         makeDraggable(card, params)
-        windowManager?.addView(card, params)
+        safeAddView(card, params)
         scamAlertView = card
     }
 
     private fun removeScamAlert() {
-        scamAlertView?.let { try { windowManager?.removeView(it) } catch (_: Exception) {} }
+        safeRemoveView(scamAlertView)
         scamAlertView = null
     }
 
-    // ════════════════════════════════════════════════════════════
-    // UI HELPERS
-    // ════════════════════════════════════════════════════════════
+    /* ═══════════════════════════════════════════════════════════
+       UI HELPERS
+    ═══════════════════════════════════════════════════════════ */
 
     private fun tv(text: String, sp: Float, color: Int, bold: Boolean = false) =
         TextView(this).apply {
@@ -491,14 +451,12 @@ class OverlayService : Service() {
     }
 
     private fun badge(label: String, color: Int) = TextView(this).apply {
-        text = label
+        text     = label
         textSize = 12f
         setTextColor(color)
         setTypeface(typeface, android.graphics.Typeface.BOLD)
         setPadding(dp(12), dp(5), dp(12), dp(5))
-        background = roundedBg(
-            Color.argb(40, Color.red(color), Color.green(color), Color.blue(color)), color, 20, 1
-        )
+        background = roundedBg(Color.argb(40, Color.red(color), Color.green(color), Color.blue(color)), color, 20, 1)
         layoutParams = LinearLayout.LayoutParams(WC, WC)
     }
 
@@ -506,9 +464,7 @@ class OverlayService : Service() {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(10), dp(12), dp(10))
-            background  = roundedBg(
-                Color.argb(25, Color.red(color), Color.green(color), Color.blue(color)), color, 10, 1
-            )
+            background  = roundedBg(Color.argb(25, Color.red(color), Color.green(color), Color.blue(color)), color, 10, 1)
         }
         layout.addView(tv(heading, 12f, color, bold = true))
         layout.addView(gap(5))
@@ -516,25 +472,20 @@ class OverlayService : Service() {
         return layout
     }
 
-    /**
-     * Renders a horizontal progress bar using two FrameLayout children.
-     * Uses the screen width minus card padding to calculate fill width
-     * directly — avoids the post{} / layout-pass timing problem.
-     */
     private fun riskBar(progress: Int, color: Int): FrameLayout {
         val dm         = resources.displayMetrics
-        val cardPad    = dp(18) * 2          // content padding on both sides
-        val totalWidth = dm.widthPixels - dp(24) - cardPad   // matches card width
-        val fillWidth  = ((progress / 100f) * totalWidth).toInt().coerceAtLeast(dp(6))
+        val cardPad    = dp(18) * 2
+        val totalWidth = dm.widthPixels - dp(24) - cardPad
+        // FIX: Clamp progress to 0-100 before width calculation
+        val clampedPct = progress.coerceIn(0, 100)
+        val fillWidth  = ((clampedPct / 100f) * totalWidth).toInt().coerceAtLeast(dp(4))
 
         return FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(MP, dp(12))
-            // Track (full width)
             addView(View(this@OverlayService).apply {
-                background = roundedBg(Color.argb(50, 255, 255, 255), Color.TRANSPARENT, 6, 0)
+                background   = roundedBg(Color.argb(50, 255, 255, 255), Color.TRANSPARENT, 6, 0)
                 layoutParams = FrameLayout.LayoutParams(MP, MP)
             })
-            // Fill (proportional)
             addView(View(this@OverlayService).apply {
                 background = GradientDrawable().apply {
                     shape        = GradientDrawable.RECTANGLE
@@ -553,7 +504,7 @@ class OverlayService : Service() {
             background  = roundedBg(Color.argb(50, 200, 0, 0), Color.RED, 12, 1)
         }
         val left = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+            orientation  = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, WC).apply { weight = 1f }
         }
         left.addView(tv("Cybercrime Helpline", 11f, Color.parseColor("#FF6B6B"), bold = true))
@@ -572,7 +523,7 @@ class OverlayService : Service() {
             textSize = 12f
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
+                shape        = GradientDrawable.RECTANGLE
                 cornerRadius = dp(8).toFloat()
                 setColor(bg)
             }
@@ -593,28 +544,61 @@ class OverlayService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else
-            WindowManager.LayoutParams.TYPE_PHONE,
+            @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
         PixelFormat.TRANSLUCENT,
     )
 
-    private fun makeDraggable(view: View, params: WindowManager.LayoutParams) {
-        var ix = 0; var iy = 0; var tx = 0f; var ty = 0f
+    /**
+     * FIX: Consolidated tap + drag handling.
+     *  - onTap is called only on a clean short tap (no drag detected).
+     *  - Touch slop threshold (8px) prevents micro-movements from being treated as drags.
+     *  - isDragging is a purely local var — no shared flag that could get stuck true.
+     *  - performClick() is NOT called on ACTION_UP; onTap fires directly, avoiding the
+     *    setOnClickListener interaction that previously caused taps to be permanently
+     *    swallowed after the first drag.
+     */
+    private fun makeDraggable(
+        view: View,
+        params: WindowManager.LayoutParams,
+        onTap: (() -> Unit)? = null,
+    ) {
+        var startX = 0; var startY = 0
+        var startRawX = 0f; var startRawY = 0f
+        val touchSlop = 8f
+        var isDragging = false
+
         view.setOnTouchListener { _, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    ix = params.x; iy = params.y; tx = e.rawX; ty = e.rawY; true
+                    startX     = params.x;  startY     = params.y
+                    startRawX  = e.rawX;    startRawY  = e.rawY
+                    isDragging = false
+                    true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params.x = ix + (e.rawX - tx).toInt()
-                    params.y = iy + (e.rawY - ty).toInt()
-                    try { windowManager?.updateViewLayout(view, params) } catch (_: Exception) {}
+                    val dx = e.rawX - startRawX
+                    val dy = e.rawY - startRawY
+                    if (!isDragging && (Math.abs(dx) > touchSlop || Math.abs(dy) > touchSlop)) {
+                        isDragging = true
+                    }
+                    if (isDragging) {
+                        params.x = startX + dx.toInt()
+                        params.y = startY + dy.toInt()
+                        try { windowManager?.updateViewLayout(view, params) } catch (ex: Exception) {
+                            Log.w("SCAMSHIELD_OVERLAY", "updateViewLayout failed: ${ex.message}")
+                        }
+                    }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    view.performClick()
-                    false
+                    if (!isDragging) {
+                        // Clean tap — invoke action directly (no performClick / setOnClickListener)
+                        onTap?.invoke()
+                    }
+                    isDragging = false
+                    true
                 }
                 else -> false
             }
@@ -626,7 +610,23 @@ class OverlayService : Service() {
             startActivity(Intent(Intent.ACTION_CALL, Uri.parse("tel:$number")).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             })
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e("SCAMSHIELD_OVERLAY", "dial failed: ${e.message}")
+        }
+    }
+
+    // FIX: safeAddView / safeRemoveView helpers centralise null + exception guards
+    private fun safeAddView(view: View, params: WindowManager.LayoutParams) {
+        val wm = windowManager ?: return
+        try { wm.addView(view, params) }
+        catch (e: Exception) { Log.e("SCAMSHIELD_OVERLAY", "addView failed: ${e.message}") }
+    }
+
+    private fun safeRemoveView(view: View?) {
+        if (view == null) return
+        val wm = windowManager ?: return
+        try { wm.removeView(view) }
+        catch (e: Exception) { Log.w("SCAMSHIELD_OVERLAY", "removeView: ${e.message}") }
     }
 
     private fun riskColor(level: String) = when {

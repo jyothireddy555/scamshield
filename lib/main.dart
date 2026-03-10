@@ -210,13 +210,15 @@ extension FraudTypeExt on FraudType {
     FraudType.none     => const Color(0xFF2ED573),
   };
   static FraudType fromString(String s) {
-    final l = s.toLowerCase();
-    if (l.contains('upi'))     return FraudType.upi;
-    if (l.contains('job'))     return FraudType.job;
-    if (l.contains('lottery')) return FraudType.lottery;
-    if (l.contains('phish'))   return FraudType.phishing;
-    if (l.contains('kyc'))     return FraudType.kyc;
-    if (l.contains('safe') || l.contains('none')) return FraudType.none;
+    final l = s.toLowerCase().trim();
+    // Match exact labels the AI is instructed to return
+    if (l == 'upi fraud' || l.contains('upi'))             return FraudType.upi;
+    if (l == 'job scam'  || l.contains('job') || l.contains('employ') || l.contains('work from home') || l.contains('wfh')) return FraudType.job;
+    if (l == 'lottery scam' || l.contains('lottery') || l.contains('prize') || l.contains('lucky draw') || l.contains('winner')) return FraudType.lottery;
+    if (l == 'kyc scam'  || l.contains('kyc') || l.contains('aadhaar') || l.contains('pan card')) return FraudType.kyc;
+    // phishing last — broad catch; do NOT let it swallow UPI/job/lottery/kyc
+    if (l == 'phishing'  || l.contains('phish') || l.contains('phising')) return FraudType.phishing;
+    if (l.contains('safe') || l.contains('none') || l == 'safe message') return FraudType.none;
     return FraudType.other;
   }
 }
@@ -399,22 +401,22 @@ class NumberReputationService {
     if (!valid) {
       return NumberCheckResult(
         number: number, risk: NumberRisk.suspicious,
-        reason: 'ఈ నంబర్ invalid గా కనిపిస్తోంది.\nYe number invalid lag raha hai.',
-        advice: 'జాగ్రత్తగా ఉండండి. Personal details share చేయకండి.',
+        reason: L.current == 'en' ? 'This number appears to be invalid.' : L.current == 'hi' ? 'यह नंबर invalid लग रहा है।' : 'ఈ నంబర్ invalid గా కనిపిస్తోంది.',
+        advice: L.current == 'en' ? 'Be cautious. Do not share personal details.' : L.current == 'hi' ? 'सावधान रहें। व्यक्तिगत जानकारी न दें।' : 'జాగ్రత్తగా ఉండండి. Personal details share చేయకండి.',
       );
     }
     if (lineType == 'voip' || lineType == 'premium' || lineType == 'toll_free') {
       return NumberCheckResult(
         number: number, risk: NumberRisk.suspicious,
-        reason: '${lineType.toUpperCase()} నంబర్ — స్కామర్లు ఉపయోగిస్తారు.\nYe ${lineType.toUpperCase()} number hai — scammer use karte hain.',
+        reason: L.current == 'en' ? '${lineType.toUpperCase()} number — commonly used by scammers.' : L.current == 'hi' ? '${lineType.toUpperCase()} नंबर — ठग इसका इस्तेमाल करते हैं।' : '${lineType.toUpperCase()} నంబర్ — స్కామర్లు ఉపయోగిస్తారు.',
         advice: L.t('dont_otp'),
       );
     }
     if (country == 'IN') return _localHeuristics(number);
     return NumberCheckResult(
       number: number, risk: NumberRisk.unknown,
-      reason: 'ఈ నంబర్ verify చేయలేకపోయాం.\nIs number ko verify nahi kar sake.',
-      advice: 'Personal details share చేయకండి.\nPersonal details share mat karo.',
+      reason: L.current == 'en' ? 'Could not verify this number.' : L.current == 'hi' ? 'इस नंबर को verify नहीं कर सके।' : 'ఈ నంబర్ verify చేయలేకపోయాం.',
+      advice: L.t('dont_otp'),
     );
   }
 
@@ -423,21 +425,21 @@ class NumberReputationService {
     if (clean.startsWith('92') && clean.length >= 11) {
       return NumberCheckResult(
         number: number, risk: NumberRisk.spam,
-        reason: 'Pakistan (+92) నుండి కాల్ — భారతీయులను target చేసే scam call.\nPakistan se call — Indian logo ko target karta hai.',
+        reason: L.current == 'en' ? 'Pakistan (+92) call — commonly targets Indian citizens.' : L.current == 'hi' ? 'Pakistan (+92) से call — भारतीयों को target करता है।' : 'Pakistan (+92) నుండి కాల్ — భారతీయులను target చేస్తారు.',
         advice: '${L.t("dont_otp")}\n${L.t("block_num")}',
       );
     }
     if (clean.startsWith('1') && clean.length == 11) {
       return NumberCheckResult(
         number: number, risk: NumberRisk.suspicious,
-        reason: 'USA/Canada నంబర్ — Indian banks/govt అని claim చేస్తే scam.\nUSA number — India bank/govt bolta hai toh SCAM hai.',
+        reason: L.current == 'en' ? 'USA/Canada number — scam if claiming to be Indian bank or govt.' : L.current == 'hi' ? 'USA/Canada नंबर — Indian bank/govt बताए तो SCAM है।' : 'USA/Canada నంబర్ — Indian bank/govt అని claim చేస్తే scam.',
         advice: L.t('dont_otp'),
       );
     }
     if (clean.startsWith('140') || clean.startsWith('160')) {
       return NumberCheckResult(
         number: number, risk: NumberRisk.suspicious,
-        reason: 'Telemarketing నంబర్ — OTP అడిగితే scam.\nTelemarketing number — OTP maange toh SCAM.',
+        reason: L.current == 'en' ? 'Telemarketing number — scam if they ask for OTP.' : L.current == 'hi' ? 'Telemarketing नंबर — OTP मांगे तो SCAM है।' : 'Telemarketing నంబర్ — OTP అడిగితే scam.',
         advice: '${L.t("dont_otp")}\n${L.t("dont_pin")}',
       );
     }
@@ -451,14 +453,14 @@ class NumberReputationService {
     if (clean.length < 8) {
       return NumberCheckResult(
         number: number, risk: NumberRisk.suspicious,
-        reason: 'చాలా చిన్న నంబర్ — అనుమానాస్పదం.\nBahut chhota number — sandehaspada.',
-        advice: 'Caller identity verify చేయండి.',
+        reason: L.current == 'en' ? 'Unusually short number — suspicious.' : L.current == 'hi' ? 'बहुत छोटा नंबर — संदिग्ध।' : 'చాలా చిన్న నంబర్ — అనుమానాస్పదం.',
+        advice: L.current == 'en' ? 'Verify the caller identity before sharing anything.' : L.current == 'hi' ? 'कुछ बताने से पहले caller की पहचान जांचें।' : 'Caller identity verify చేయండి.',
       );
     }
     return NumberCheckResult(
       number: number, risk: NumberRisk.unknown,
-      reason: 'ఈ నంబర్ contacts లో లేదు.\nYe number contacts mein nahi hai.',
-      advice: 'OTP, Bank PIN, Aadhaar share చేయకండి.\nOTP, Bank PIN, Aadhaar mat batao.',
+      reason: L.current == 'en' ? 'This number is not in your contacts.' : L.current == 'hi' ? 'यह नंबर आपके contacts में नहीं है।' : 'ఈ నంబర్ contacts లో లేదు.',
+      advice: L.t('dont_otp'),
     );
   }
 
@@ -484,8 +486,8 @@ class NumberReputationService {
 
   static NumberCheckResult _unknown(String n) => NumberCheckResult(
     number: n, risk: NumberRisk.unknown,
-    reason: 'ఈ నంబర్ identify చేయలేకపోయాం.',
-    advice: 'Personal details share చేయకండి.',
+    reason: L.current == 'en' ? 'Could not identify this number.' : L.current == 'hi' ? 'इस नंबर की पहचान नहीं हो सकी।' : 'ఈ నంబర్ identify చేయలేకపోయాం.',
+    advice: L.current == 'en' ? 'Do not share personal details with unknown callers.' : L.current == 'hi' ? 'अनजान को personal details न दें।' : 'Personal details share చేయకండి.',
   );
 
   // FIX: Expose cache clear for testing / manual invalidation
@@ -629,34 +631,47 @@ class ApiService {
 
     final prompt = '''
 You are a Fraud Risk Detection AI protecting rural Indian citizens from digital scams.
-
-Analyze the message below and return ONLY a valid JSON object. No markdown, no explanation outside JSON.
+Analyze the message below and return ONLY a valid JSON object — no markdown, no text outside JSON.
 
 Message: "$safeText"
 
-Scoring Rules:
-- Asks for OTP, password, or bank details → 80-100
-- Click link to verify account → 70-95
-- Lottery / prize / winner claim → 80-100
-- Job offer + registration fee / high salary WFH → 60-90
-- UPI payment request / money transfer → 70-95
-- Urgent account suspension threat → 65-90
-- Shortened URLs (bit.ly, tinyurl, t.me) → add 15-20
-- Normal informational / personal message → 0-20
-- Legitimate ISP / carrier message → 0-15
+── SCAM PROBABILITY SCORING (0-100) ──
+• Asks for OTP, password, PIN, or bank account details → 80-100
+• Asks to scan a QR code to receive money → 75-95
+• Lottery / prize / lucky draw / winner claim → 80-100
+• Job offer asking for registration fee, training fee, or security deposit → 65-90
+• Work-from-home job with unrealistically high daily earnings → 60-85
+• UPI payment request from unknown sender → 70-95
+• KYC update / Aadhaar or PAN re-link via SMS link → 70-90
+• Account suspended / blocked threat with urgent link → 65-90
+• Shortened URL (bit.ly, tinyurl, t.me, rb.gy) → add +15
+• Informational / personal / transactional (OTP you requested, bank balance, delivery notification) → 0-20
+• Legitimate carrier or government message → 0-15
+• If the message is informal like from friends and family then make it safe 
 
-Risk Classification:
+── FRAUD TYPE CLASSIFICATION (pick EXACTLY one) ──
+UPI Fraud    → message mentions UPI, GPay, PhonePe, Paytm, QR code, bank account, NEFT/IMPS transfer, "send money to receive money"
+Job Scam     → message mentions work-from-home, part-time job, data entry, typing job, earn daily, registration fee, training fee, salary guarantee without interview
+Lottery Scam → message mentions lottery, lucky draw, prize money, winner, claim reward, congratulations you won, processing fee to release prize
+KYC Scam     → message mentions KYC update/expired/pending, Aadhaar link, PAN card update, account will be blocked due to KYC
+Phishing     → message contains a suspicious link asking to login, verify account, reset password, or confirm identity — AND does NOT fit UPI/Job/Lottery/KYC above
+Safe Message → normal personal message, legitimate OTP you requested, delivery update, government notice, family/friend conversation
+Others       → scam indicators present but does not clearly match any above category
+
+IMPORTANT: Do NOT classify a message as Phishing just because it has a link. First check UPI, Job, Lottery, KYC. Use Phishing only when the core intent is credential harvesting via a fake login page.
+
+── RISK LEVEL ──
 0-30 → Safe | 31-60 → Suspicious | 61-100 → High Risk
 
-Return JSON exactly:
+Return JSON:
 {
   "scam_probability": <0-100>,
   "risk_level": "<Safe|Suspicious|High Risk>",
   "fraud_type": "<UPI Fraud|Job Scam|Lottery Scam|Phishing|KYC Scam|Safe Message|Others>",
   "suspicious_keywords": ["word1", "word2"],
-  "explanation": "<2-3 sentences>",
+  "explanation": "<2-3 sentences explaining WHY this is or is not a scam>",
   "prevention_tips": ["tip1", "tip2", "tip3"],
-  "what_to_do": "<clear action>",
+  "what_to_do": "<one clear action the user should take>",
   "helpline": "1930"
 }
 ''';
@@ -848,29 +863,161 @@ class _LocalEngine {
       words.where((w) => t.contains(w.toLowerCase())).length;
 
   static String _explain(FraudType ft, double score) {
-    if (score < 15) return '${L.t("wtd_safe")}\nNo significant scam indicators found.';
-    switch (ft) {
-      case FraudType.upi:      return 'UPI మోసం గుర్తించబడింది!\nUPI fraud pakda gaya!\nPIN, OTP, QR share చేయకండి.';
-      case FraudType.job:      return 'Job మోసం!\nJob scam hai!\nEmployer ఎప్పుడూ పైసలు అడగడు.';
-      case FraudType.lottery:  return 'Lottery మోసం!\nLottery scam hai!\nEnter చేయని Lottery win అవదు.';
-      case FraudType.phishing: return 'Phishing link!\nNaqli link hai!\nLinks click చేయకండి.';
-      case FraudType.kyc:      return 'KYC మోసం!\nKYC scam hai!\nBank SMS లో KYC link పంపదు.';
-      default:                 return 'Suspicious patterns detected.\nజాగ్రత్తగా ఉండండి!\nSaavdhan rahein!';
+    if (score < 15) {
+      if (L.current == 'en') return 'No scam indicators detected. This appears to be a safe message.';
+      if (L.current == 'hi') return 'कोई स्कैम संकेत नहीं मिले। यह एक सुरक्षित संदेश लगता है।';
+      return 'స్కామ్ సంకేతాలు కనుగొనలేదు. ఇది సురక్షిత సందేశంగా కనిపిస్తోంది.';
     }
+    if (L.current == 'en') {
+      return switch (ft) {
+        FraudType.upi      => 'UPI fraud detected! Never share your PIN, OTP, or scan unknown QR codes.',
+        FraudType.job      => 'Job scam detected! Legitimate employers never ask for a registration or training fee.',
+        FraudType.lottery  => 'Lottery scam! You cannot win a lottery you never entered. Any fee request is a trap.',
+        FraudType.phishing => 'Phishing link! This message tries to steal your credentials. Banks never send login links via SMS.',
+        FraudType.kyc      => 'KYC scam! Banks never send KYC update links via SMS. Visit your branch in person.',
+        _                  => 'Suspicious patterns detected. Be cautious before responding or clicking any link.',
+      };
+    }
+    if (L.current == 'hi') {
+      return switch (ft) {
+        FraudType.upi      => 'UPI धोखाधड़ी! PIN, OTP या अनजान QR कोड कभी साझा न करें।',
+        FraudType.job      => 'नौकरी घोटाला! असली नियोक्ता कभी रजिस्ट्रेशन या ट्रेनिंग फीस नहीं मांगते।',
+        FraudType.lottery  => 'लॉटरी स्कैम! जो लॉटरी आपने खरीदी नहीं, वो नहीं जीत सकते।',
+        FraudType.phishing => 'फ़िशिंग लिंक! यह संदेश आपका पासवर्ड चुराने की कोशिश कर रहा है।',
+        FraudType.kyc      => 'KYC घोटाला! बैंक SMS पर KYC लिंक नहीं भेजते। शाखा जाएं।',
+        _                  => 'संदिग्ध संदेश। कोई भी लिंक क्लिक करने से पहले सावधान रहें।',
+      };
+    }
+    return switch (ft) {
+      FraudType.upi      => 'UPI మోసం గుర్తించబడింది! PIN, OTP, QR share చేయకండి.',
+      FraudType.job      => 'Job మోసం! నిజమైన employer ఎప్పుడూ రిజిస్ట్రేషన్ ఫీ అడగడు.',
+      FraudType.lottery  => 'Lottery మోసం! Enter చేయని Lottery win అవదు. ఫీ అడిగితే మోసం.',
+      FraudType.phishing => 'Phishing link! ఈ మెసేజ్ మీ password దొంగిలించడానికి పంపబడింది.',
+      FraudType.kyc      => 'KYC మోసం! బ్యాంక్ SMS లో KYC link పంపదు. Branch కి వెళ్ళండి.',
+      _                  => 'అనుమానాస్పద సందేశం. ఏ link క్లిక్ చేయడానికి ముందు జాగ్రత్తగా ఉండండి.',
+    };
   }
 
   static List<String> _tips(FraudType ft) {
-    switch (ft) {
-      case FraudType.upi:      return [L.t('tip_otp'), L.t('tip_qr'), 'Play Store నుండి మాత్రమే payment apps వాడండి.', 'Transfer చేయడానికి ముందు recipient పేరు చెక్ చేయండి.'];
-      case FraudType.job:      return [L.t('tip_job'), 'Company LinkedIn లో verify చేయండి.', 'WhatsApp job offers unknown numbers నుండి వస్తే నమ్మకండి.', 'Naukri / NCS portal వాడండి.'];
-      case FraudType.lottery:  return [L.t('tip_lottery'), 'Lottery prize కోసం పైసలు అడిగితే scam.', 'Aadhaar / Bank details share చేయకండి.', '1930 కి call చేయండి.'];
-      case FraudType.phishing: return [L.t('tip_link'), 'Bank ఎప్పుడూ SMS లో password అడగదు.', 'URLs జాగ్రత్తగా చదవండి — sbi-secure.xyz అంటే fake.', 'Banking apps లో 2FA enable చేయండి.'];
-      case FraudType.kyc:      return [L.t('tip_kyc'), 'KYC bank branch లో మాత్రమే చేయాలి.', 'SMS లో Aadhaar/PAN link పంపారు అంటే scam.', 'Official bank helpline కి call చేయండి.'];
-      default:                 return [L.t('tip_link'), L.t('tip_otp'), '1930 కి call చేయండి.\n1930 pe call karein.', 'cybercrime.gov.in లో report చేయండి.'];
+    if (L.current == 'en') {
+      return switch (ft) {
+        FraudType.upi => [
+          'Never share OTP, PIN, or UPI credentials with anyone.',
+          'Use only official payment apps from the Play Store.',
+          'Verify the recipient name before transferring money.',
+          'If defrauded, call 1930 immediately.',
+        ],
+        FraudType.job => [
+          'Legitimate jobs never charge a registration or training fee.',
+          'Verify the company on LinkedIn or the National Career Service portal.',
+          'Avoid job offers arriving via WhatsApp from unknown numbers.',
+          'Never pay any fee before starting work.',
+        ],
+        FraudType.lottery => [
+          'You cannot win a lottery you did not enter.',
+          'Any processing fee request is a confirmed scam.',
+          'Never share Aadhaar or bank details to claim a prize.',
+          'Report to 1930 immediately.',
+        ],
+        FraudType.phishing => [
+          'Banks never send password reset links via SMS.',
+          'Read URLs carefully — fake sites mimic real ones.',
+          'Enable 2-factor authentication on all banking apps.',
+          'Forward suspicious SMS to 1909 (DND service).',
+        ],
+        FraudType.kyc => [
+          'KYC must only be done at your bank branch or official app.',
+          'Never click Aadhaar/PAN update links received via SMS.',
+          'Banks never ask for OTP over a call to complete KYC.',
+          'Call your bank official helpline if in doubt.',
+        ],
+        _ => [
+          'Never click links in suspicious messages.',
+          'Never share OTP or PIN with anyone.',
+          'Report fraud immediately to 1930.',
+          'File a complaint at cybercrime.gov.in.',
+        ],
+      };
     }
+    if (L.current == 'hi') {
+      return switch (ft) {
+        FraudType.upi => [
+          'OTP, PIN किसी के साथ साझा न करें।',
+          'केवल Play Store से आधिकारिक पेमेंट ऐप्स इस्तेमाल करें।',
+          'पैसे ट्रांसफर करने से पहले नाम जांचें।',
+          'धोखाधड़ी होने पर तुरंत 1930 पर कॉल करें।',
+        ],
+        FraudType.job => [
+          'असली नौकरी कभी रजिस्ट्रेशन या ट्रेनिंग फीस नहीं मांगती।',
+          'LinkedIn या NCS पोर्टल पर कंपनी जांचें।',
+          'WhatsApp पर आने वाले जॉब ऑफर से सावधान रहें।',
+          'काम शुरू करने से पहले कोई फीस न दें।',
+        ],
+        FraudType.lottery => [
+          'जो लॉटरी आपने खरीदी नहीं, वो नहीं जीत सकते।',
+          'प्रोसेसिंग फीस मांगना घोटाला है।',
+          'आधार या बैंक विवरण साझा न करें।',
+          'तुरंत 1930 पर रिपोर्ट करें।',
+        ],
+        FraudType.phishing => [
+          'बैंक SMS पर पासवर्ड लिंक नहीं भेजते।',
+          'URL ध्यान से पढ़ें — नकली साइट असली जैसी दिखती है।',
+          'सभी बैंकिंग ऐप्स पर 2FA चालू करें।',
+          'संदिग्ध SMS को 1909 पर फॉरवर्ड करें।',
+        ],
+        FraudType.kyc => [
+          'KYC केवल बैंक शाखा या आधिकारिक ऐप से करें।',
+          'SMS में आए Aadhaar/PAN लिंक कभी क्लिक न करें।',
+          'KYC के लिए फोन पर OTP न दें।',
+          'संदेह हो तो बैंक हेल्पलाइन पर कॉल करें।',
+        ],
+        _ => [
+          'संदिग्ध संदेशों में लिंक क्लिक न करें।',
+          'OTP या PIN किसी से साझा न करें।',
+          'तुरंत 1930 पर रिपोर्ट करें।',
+          'cybercrime.gov.in पर शिकायत दर्ज करें।',
+        ],
+      };
+    }
+    // Telugu (default)
+    return switch (ft) {
+      FraudType.upi => [
+        L.t('tip_otp'), L.t('tip_qr'),
+        'Play Store నుండి మాత్రమే payment apps వాడండి.',
+        'Transfer చేయడానికి ముందు recipient పేరు check చేయండి.',
+      ],
+      FraudType.job => [
+        L.t('tip_job'),
+        'LinkedIn లో company verify చేయండి.',
+        'WhatsApp లో వచ్చే job offers నమ్మకండి.',
+        'పని మొదలుపెట్టే ముందు fees కట్టకండి.',
+      ],
+      FraudType.lottery => [
+        L.t('tip_lottery'),
+        'Processing fee అడిగితే 100% మోసం.',
+        'Aadhaar / Bank details share చేయకండి.',
+        '1930 కి call చేయండి.',
+      ],
+      FraudType.phishing => [
+        L.t('tip_link'),
+        'Bank ఎప్పుడూ SMS లో password అడగదు.',
+        'URLs జాగ్రత్తగా చదవండి — fake site అంటే fake.',
+        'Banking apps లో 2FA enable చేయండి.',
+      ],
+      FraudType.kyc => [
+        L.t('tip_kyc'),
+        'KYC bank branch లో మాత్రమే చేయాలి.',
+        'SMS లో Aadhaar/PAN link పంపారు అంటే scam.',
+        'Official bank helpline కి call చేయండి.',
+      ],
+      _ => [
+        L.t('tip_link'), L.t('tip_otp'),
+        '1930 కి call చేయండి.',
+        'cybercrime.gov.in లో report చేయండి.',
+      ],
+    };
   }
 }
-
 // ══════════════════════════════════════════════════════════════
 // HISTORY SERVICE
 // ══════════════════════════════════════════════════════════════
@@ -1009,7 +1156,13 @@ Future<ScanResult?> _runPipeline({
     return null;
   }
   if (text.trim().length < _kMinAnalysisLength) {
-    setStatus('Text చదవలేదు. Sharp image try చేయండి.');
+    setStatus(
+      L.current == 'en'
+          ? 'Could not read text. Try a sharper image.'
+          : L.current == 'hi'
+          ? 'टेक्स्ट नहीं पढ़ पाया। साफ इमेज ट्राई करें।'
+          : 'Text చదవలేదు. Sharp image try చేయండి.',
+    );
     return null;
   }
 
@@ -1151,7 +1304,7 @@ class _SpamCallWarningState extends State<SpamCallWarningScreen>
                 child: _WarningCard(
                   color: _color,
                   icon: Icons.info_outline_rounded,
-                  title: 'ఎందుకు Warning? / Warning Kyun?',
+                  title: L.t('why_alert'),
                   body: widget.result.reason,
                 ),
               ),
@@ -1175,9 +1328,7 @@ class _SpamCallWarningState extends State<SpamCallWarningScreen>
                 color: const Color(0xFF2ED573),
                 icon: Icons.bolt_rounded,
                 title: L.t('what_now'),
-                body: _isSpam
-                    ? '1️⃣ Phone కట్ చేయండి — Phone kaato!\n2️⃣ Number block చేయండి — Block karo!\n3️⃣ 1930 కి call చేయండి — 1930 pe call karo!'
-                    : '1️⃣ Personal details share చేయకండి\n2️⃣ OTP, PIN, Aadhaar చెప్పకండి\n3️⃣ Bank అయితే official number కి call చేయండి',
+                body: _isSpam ? L.t('wtd_high') : L.t('wtd_susp'),
               ),
               const SizedBox(height: 20),
               if (_isSpam) ...[
@@ -1192,10 +1343,10 @@ class _SpamCallWarningState extends State<SpamCallWarningScreen>
                     try { await launchUrl(Uri.parse('tel:1930')); } catch (_) {}
                   },
                   icon: const Icon(Icons.call_rounded),
-                  label: const Text(
-                    '📞 1930 కి Call చేయండి\n1930 pe Call Karein',
+                  label: Text(
+                    L.t('call_1930'),
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -1209,7 +1360,8 @@ class _SpamCallWarningState extends State<SpamCallWarningScreen>
                   ),
                   onPressed: () => Navigator.pop(context),
                   icon: const Icon(Icons.check_rounded),
-                  label: const Text('Dismiss\nసరే', textAlign: TextAlign.center, style: TextStyle(fontSize: 13)),
+                  label: Text(L.t('dismiss'), textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 13)),
                 )),
               ]),
             ]),
@@ -1306,10 +1458,14 @@ class CallAlertDialog extends StatelessWidget {
               color: Colors.red.shade900.withOpacity(0.3),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Text(
-              '🚫 OTP • Bank PIN • Aadhaar\nఎవరికీ చెప్పకండి! Kisi ko mat batao!',
+            child: Text(
+              L.current == 'en'
+                  ? '🚫 OTP • Bank PIN • Aadhaar\nNEVER share with anyone!'
+                  : L.current == 'hi'
+                  ? '🚫 OTP • Bank PIN • Aadhaar\nकिसी को मत बताइए!'
+                  : '🚫 OTP • Bank PIN • Aadhaar\nఎవరికీ చెప్పకండి!',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13, height: 1.5),
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13, height: 1.5),
             ),
           ),
           const SizedBox(height: 20),
@@ -1559,7 +1715,10 @@ class _CybercrimeHelplineBanner extends StatelessWidget {
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(result.helpline, style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 4)),
             const SizedBox(height: 3),
-            Text('24×7 Free  •  ఉచిత సేవ', style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+            Text(
+              L.t('helpline_tag'),
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
+            ),
             Text('cybercrime.gov.in', style: TextStyle(fontSize: 11, color: Colors.blue.shade300)),
           ])),
           const SizedBox(width: 8),
@@ -1624,13 +1783,17 @@ class ScamAlertDialog extends StatelessWidget {
           Text(_title, textAlign: TextAlign.center,
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color, height: 1.4)),
           const SizedBox(height: 10),
-          FraudTypeBadge(fraudType: result.fraudType, bilingual: true),
+          FraudTypeBadge(fraudType: result.fraudType, bilingual: L.current != 'en'),
           const SizedBox(height: 20),
           ProbabilityMeter(probability: result.scamProbability, riskLevel: result.riskLevel),
           const SizedBox(height: 20),
 
           if (result.suspiciousKeywords.isNotEmpty) ...[
-            const _SL('🔎 Suspicious Words / అనుమానాస్పద పదాలు'),
+            _SL(L.current == 'en'
+                ? '🔎 Suspicious Keywords'
+                : L.current == 'hi'
+                ? '🔎 संदिग्ध शब्द'
+                : '🔎 అనుమానాస్పద పదాలు'),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8, runSpacing: 6,
@@ -1646,7 +1809,11 @@ class ScamAlertDialog extends StatelessWidget {
           ],
 
           if (result.originalText.isNotEmpty) ...[
-            const _SL('📩 Scanned Message / చదివిన సందేశం'),
+            _SL(L.current == 'en'
+                ? '📩 Scanned Message'
+                : L.current == 'hi'
+                ? '📩 स्कैन किया गया संदेश'
+                : '📩 చదివిన సందేశం'),
             const SizedBox(height: 8),
             Container(
               width: double.infinity,
@@ -1697,7 +1864,7 @@ class ScamAlertDialog extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: () => Navigator.pop(context),
               icon: const Icon(Icons.close_rounded),
-              label: const Text('Dismiss / సరే'),
+              label: Text(L.current == 'en' ? 'Dismiss' : L.current == 'hi' ? 'ठीक है' : 'సరే'),
             ),
             if (showFull)
               ElevatedButton.icon(
@@ -1853,27 +2020,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _recentNotifHashes.add(hash);
 
       // Instant scam check FIRST — bypasses safe-sender filter
-      if (_NotifFilter.isInstantScam(text)) {
-        debugPrint('🚨 [NOTIF] Instant scam — bypassing safe filter');
-        final instant = ScanResult(
-          scamProbability: 90, isScam: true, riskLevel: RiskLevel.highRisk,
-          fraudType: FraudType.phishing,
-          suspiciousKeywords: ['suspicious link / pattern'],
-          explanation: 'Instant scam pattern detected.\nస్కామ్ pattern వెంటనే గుర్తించబడింది!',
-          preventionTips: [L.t('tip_link'), L.t('tip_otp')],
-          whatToDo: L.t('wtd_high'),
-          helpline: '1930', originalText: text, timestamp: DateTime.now(),
-        );
-        await HistoryService.save(instant);
-        await _showScamOverlay(instant, source: app.isNotEmpty ? app : 'Message');
-        return;
-      }
+      // if (_NotifFilter.isInstantScam(text)) {
+      //   debugPrint('🚨 [NOTIF] Instant scam — bypassing safe filter');
+      //   final instant = ScanResult(
+      //     scamProbability: 90, isScam: true, riskLevel: RiskLevel.highRisk,
+      //     fraudType: FraudType.phishing,
+      //     suspiciousKeywords: ['suspicious link / pattern'],
+      //     explanation: L.current == 'en' ? 'Scam pattern instantly detected in the notification.' : L.current == 'hi' ? 'नोटिफिकेशन में तुरंत scam pattern पकड़ा गया।' : 'Notification లో scam pattern గుర్తించబడింది.',
+      //     preventionTips: [L.t('tip_link'), L.t('tip_otp')],
+      //     whatToDo: L.t('wtd_high'),
+      //     helpline: '1930', originalText: text, timestamp: DateTime.now(),
+      //   );
+      //   await HistoryService.save(instant);
+      //   await _showScamOverlay(instant, source: app.isNotEmpty ? app : 'Message');
+      //   return;
+      // }
 
       // Safe sender/pattern filter
-      if (_NotifFilter.isSafe(app, title, text)) {
-        debugPrint('✅ [NOTIF] Safe — skipped');
-        return;
-      }
+      // if (_NotifFilter.isSafe(app, title, text)) {
+      //   debugPrint('✅ [NOTIF] Safe — skipped');
+      //   return;
+      // }
 
       // AI analysis
       ScanResult result;
@@ -2043,15 +2210,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final p = await SharedPreferences.getInstance();
         await p.setBool(_kOverlayEnabled, true);
         if (mounted) setState(() => _overlayEnabled = true);
-        _showSnack('✅ Floating button enable అయింది!');
+        _showSnack(L.current == 'en' ? '✅ Floating button enabled!' : L.current == 'hi' ? '✅ Floating button चालू हुआ!' : '✅ Floating button enable అయింది!');
       } else {
-        _showSnack('Permission denied. Settings లో grant చేయండి.');
+        _showSnack(L.current == 'en' ? 'Permission denied. Please grant in Settings.' : L.current == 'hi' ? 'अनुमति नहीं मिली। Settings में दें।' : 'Permission denied. Settings లో grant చేయండి.');
         if (mounted) {
           final open = await showDialog<bool>(
             context: context,
             builder: (_) => AlertDialog(
-              title: const Text('Permission కావాలి'),
-              content: const Text('Settings లో "Display over other apps" allow చేయండి.'),
+              title: Text(L.current == 'en' ? 'Permission Required' : L.current == 'hi' ? 'अनुमति चाहिए' : 'Permission కావాలి'),
+              content: Text(L.current == 'en' ? 'Allow "Display over other apps" in Settings.' : L.current == 'hi' ? 'Settings में "अन्य ऐप्स पर दिखाएं" अनुमति दें।' : 'Settings లో "Display over other apps" allow చేయండి.'),
               actions: [
                 TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
                 TextButton(onPressed: () => Navigator.pop(context, true),  child: const Text('Open Settings')),
@@ -2075,14 +2242,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final p = await SharedPreferences.getInstance();
       await p.setBool(_kOverlayEnabled, false);
       if (mounted) setState(() => _overlayEnabled = false);
-      _showSnack('Floating button disabled.');
+      _showSnack(L.current == 'en' ? 'Floating button disabled.' : L.current == 'hi' ? 'Floating button बंद हुआ।' : 'Floating button disable అయింది.');
     } else {
       if (await _hasOverlayPermission()) {
         await _startOverlay();
         final p = await SharedPreferences.getInstance();
         await p.setBool(_kOverlayEnabled, true);
         if (mounted) setState(() => _overlayEnabled = true);
-        _showSnack('✅ Floating button enable అయింది!');
+        _showSnack(L.current == 'en' ? '✅ Floating button enabled!' : L.current == 'hi' ? '✅ Floating button चालू हुआ!' : '✅ Floating button enable అయింది!');
       } else {
         _waitingForPerm = true;
         await _requestOverlayPermission();
@@ -2092,7 +2259,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _scanScreen() async {
     if (_scanning) return;
-    setState(() { _scanning = true; _status = 'Screen capture అవుతోంది…'; });
+    setState(() { _scanning = true; _status = L.t('status_ocr'); });
     try {
       final bytes = await _screenshotCtrl.capture();
       if (bytes == null) {
@@ -2162,17 +2329,52 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
+  // ── Language-aware helper strings ──
+  String get _heroSubtitle    => L.t('app_tagline');
+  String get _scanCardTitle   => L.t('scan_gallery');
+  String get _scanCardSubtitle => L.current == 'en'
+      ? 'Pick a suspicious message from your gallery to analyse'
+      : L.current == 'hi'
+      ? 'संदिग्ध संदेश की फोटो गैलरी से चुनें'
+      : 'అనుమానాస్పద మెసేజ్ ఫోటో గ్యాలరీ నుండి ఎంచుకోండి';
+  String get _detectsLabel    => L.t('detects');
+  String get _protectionLabel => L.current == 'en'
+      ? 'Protection Features'
+      : L.current == 'hi'
+      ? 'सुरक्षा सुविधाएं'
+      : 'రక్షణ ఫీచర్లు';
+
   @override
   Widget build(BuildContext context) {
     return Screenshot(
       controller: _screenshotCtrl,
       child: Scaffold(
+        backgroundColor: const Color(0xFF0D0D1A),
         appBar: AppBar(
-          title: const Text('🛡️ ScamShield', style: TextStyle(fontWeight: FontWeight.bold)),
+          backgroundColor: const Color(0xFF0D0D1A),
+          elevation: 0,
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 32, height: 32,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF1565C0), Color(0xFF7B1FA2)],
+                  ),
+                ),
+                child: const Icon(Icons.security_rounded, size: 18, color: Colors.white),
+              ),
+              const SizedBox(width: 10),
+              const Text('ScamShield',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.white)),
+            ],
+          ),
           centerTitle: true,
           actions: [
             IconButton(
-              icon: const Icon(Icons.history_rounded),
+              icon: const Icon(Icons.history_rounded, color: Colors.white70),
               tooltip: 'History',
               onPressed: () => Navigator.push(
                 context,
@@ -2182,102 +2384,332 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ],
         ),
         body: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
           child: Column(children: [
 
+            // ── Incoming call banner ──
             if (_incomingCall) ...[
               _IncomingCallBanner(number: _incomingNumber, checking: _checkingNumber),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
             ],
 
+            // ══ HERO SECTION ══
             Container(
-              padding: const EdgeInsets.all(24),
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
               decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.blue.withOpacity(0.1),
-                border: Border.all(color: Colors.blue.withOpacity(0.4), width: 2),
+                borderRadius: BorderRadius.circular(20),
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF0A1628), Color(0xFF1A0A2E)],
+                ),
+                border: Border.all(color: Colors.blue.withOpacity(0.2)),
               ),
-              child: const Icon(Icons.security_rounded, size: 80, color: Colors.blue),
+              child: Column(children: [
+                // Shield icon with glow
+                Container(
+                  width: 80, height: 80,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(
+                      colors: [
+                        Colors.blue.withOpacity(0.25),
+                        Colors.transparent,
+                      ],
+                    ),
+                  ),
+                  child: Center(
+                    child: Container(
+                      width: 60, height: 60,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [Color(0xFF1565C0), Color(0xFF7B1FA2)],
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.blue.withOpacity(0.4),
+                            blurRadius: 20,
+                            spreadRadius: 2,
+                          ),
+                        ],
+                      ),
+                      child: const Icon(Icons.security_rounded, size: 32, color: Colors.white),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'ScamShield',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _heroSubtitle,
+                  style: const TextStyle(color: Colors.white54, fontSize: 13),
+                  textAlign: TextAlign.center,
+                ),
+                if (_scanning) ...[
+                  const SizedBox(height: 16),
+                  const SizedBox(
+                    width: 24, height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  ),
+                  const SizedBox(height: 8),
+                ] else if (_status != L.t('status_idle')) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                    ),
+                    child: Text(
+                      _status,
+                      style: const TextStyle(color: Colors.blue, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ]),
             ),
+
+            const SizedBox(height: 16),
+
+            // ══ SCAN CARD ══
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: const Color(0xFF111128),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: const Color(0xFF1565C0).withOpacity(0.4)),
+              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1565C0).withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.photo_library_rounded,
+                        color: Color(0xFF42A5F5), size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(_scanCardTitle,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                          )),
+                      const SizedBox(height: 2),
+                      Text(_scanCardSubtitle,
+                          style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                    ]),
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                GestureDetector(
+                  onTap: _picking || _scanning ? null : _pickFromGallery,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    width: double.infinity,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      gradient: (_picking || _scanning)
+                          ? null
+                          : const LinearGradient(
+                        colors: [Color(0xFF1565C0), Color(0xFF1976D2)],
+                      ),
+                      color: (_picking || _scanning)
+                          ? Colors.white12
+                          : null,
+                      borderRadius: BorderRadius.circular(13),
+                      boxShadow: (_picking || _scanning)
+                          ? []
+                          : [
+                        BoxShadow(
+                          color: const Color(0xFF1565C0).withOpacity(0.4),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (_picking || _scanning)
+                          const SizedBox(
+                            width: 18, height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white54,
+                            ),
+                          )
+                        else
+                          const Icon(Icons.photo_library_rounded,
+                              color: Colors.white, size: 20),
+                        const SizedBox(width: 10),
+                        Text(
+                          L.t('scan_gallery'),
+                          style: TextStyle(
+                            color: (_picking || _scanning)
+                                ? Colors.white38
+                                : Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(_detectsLabel,
+                    style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6, runSpacing: 6,
+                  children: [
+                    FraudType.upi,
+                    FraudType.job,
+                    FraudType.lottery,
+                    FraudType.phishing,
+                    FraudType.kyc,
+                  ].map((ft) => FraudTypeBadge(fraudType: ft, bilingual: false)).toList(),
+                ),
+              ]),
+            ),
+
             const SizedBox(height: 14),
-            const Text('🛡️ ScamShield', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            const Text(
-              'AI స్కామ్ రక్షణ • AI Scam Protection',
-              style: TextStyle(color: Colors.white54, fontSize: 13),
-              textAlign: TextAlign.center,
+
+            // ══ PROTECTION CONTROLS ══
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: const Color(0xFF111128),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  const Icon(Icons.shield_rounded, color: Colors.tealAccent, size: 18),
+                  const SizedBox(width: 8),
+                  Text(
+                    _protectionLabel,
+                    style: const TextStyle(
+                      color: Colors.tealAccent,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 14),
+                _FloatingButtonToggle(
+                    enabled: _overlayEnabled, onToggle: _toggleOverlay),
+                const SizedBox(height: 10),
+                _NotificationToggle(
+                    enabled: _notificationEnabled,
+                    onEnable: _enableNotificationProtection,
+                    onDisable: _disableNotificationProtection),
+                const SizedBox(height: 10),
+                _TalkToScamShieldButton(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const VoiceAdvisorScreen()),
+                  ),
+                ),
+              ]),
             ),
-            const SizedBox(height: 6),
-            Text(_status, style: const TextStyle(color: Colors.grey, fontSize: 13), textAlign: TextAlign.center),
-            const SizedBox(height: 28),
 
-            if (_scanning)
-              const Column(children: [CircularProgressIndicator(), SizedBox(height: 12)])
-            else ...[
-              ElevatedButton.icon(
-                onPressed: _scanScreen,
-                icon: const Icon(Icons.document_scanner_rounded, size: 22),
-                label: Text(L.t('scan_now'), textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, height: 1.3)),
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 60),
-                  backgroundColor: Colors.blue, foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-              ),
-              const SizedBox(height: 12),
-              ElevatedButton.icon(
-                onPressed: _picking ? null : _pickFromGallery,
-                icon: const Icon(Icons.photo_library_rounded, size: 22),
-                label: Text(L.t('scan_gallery'), textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, height: 1.3)),
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 54),
-                  backgroundColor: const Color(0xFF1565C0), foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-              ),
-              const SizedBox(height: 12),
-              _FloatingButtonToggle(enabled: _overlayEnabled, onToggle: _toggleOverlay),
-              const SizedBox(height: 12),
-              _NotificationToggle(enabled: _notificationEnabled, onEnable: _enableNotificationProtection, onDisable: _disableNotificationProtection),
-              const SizedBox(height: 12),
-              // ── Voice Advisor Button ──
-              _TalkToScamShieldButton(
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const VoiceAdvisorScreen()),
-                ),
-              ),
-              const SizedBox(height: 12),
-              _LanguageToggle(current: L.current, onSelect: _setLanguage),
-            ],
+            const SizedBox(height: 14),
 
-            const SizedBox(height: 28),
+            // ══ LANGUAGE SETTINGS ══
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: const Color(0xFF111128),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: Colors.amber.withOpacity(0.25)),
+              ),
+              child: _LanguageToggle(current: L.current, onSelect: _setLanguage),
+            ),
+
+            const SizedBox(height: 14),
+
+            // ══ QUICK RULES ══
             _QuickRulesCard(),
-            const SizedBox(height: 20),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text('ఇవి గుర్తిస్తుంది / Ye Pehchanta Hai:', style: TextStyle(color: Colors.grey, fontSize: 12)),
-            ),
-            const SizedBox(height: 8),
+
+            const SizedBox(height: 14),
+
+            // ══ HELPLINE ══
+            const _HomeHelplineBanner(),
+
+            const SizedBox(height: 14),
+
+            // ══ INFO CHIPS ══
             Wrap(
               spacing: 8, runSpacing: 8,
-              children: [FraudType.upi, FraudType.job, FraudType.lottery, FraudType.phishing, FraudType.kyc]
-                  .map((ft) => FraudTypeBadge(fraudType: ft, bilingual: true))
-                  .toList(),
+              alignment: WrapAlignment.center,
+              children: [
+                _InfoChip(
+                    icon: Icons.phone_android_rounded,
+                    label: L.current == 'en'
+                        ? 'On-device OCR'
+                        : L.current == 'hi'
+                        ? 'ऑन-डिवाइस OCR'
+                        : 'On-device OCR'),
+                _InfoChip(
+                    icon: Icons.lock_rounded,
+                    label: L.current == 'en'
+                        ? 'Privacy First'
+                        : L.current == 'hi'
+                        ? 'प्राइवेसी सुरक्षित'
+                        : 'గోప్యత రక్షణ'),
+                _InfoChip(
+                    icon: Icons.bolt_rounded,
+                    label: L.current == 'en'
+                        ? 'AI Powered'
+                        : L.current == 'hi'
+                        ? 'AI संचालित'
+                        : 'AI ఆధారిత'),
+                _InfoChip(
+                    icon: Icons.offline_bolt_rounded,
+                    label: L.current == 'en'
+                        ? 'Offline Fallback'
+                        : L.current == 'hi'
+                        ? 'ऑफलाइन उपलब्ध'
+                        : 'ఆఫ్‌లైన్ మోడ్'),
+                _InfoChip(
+                    icon: Icons.phone_in_talk_rounded,
+                    label: L.current == 'en'
+                        ? 'Call Guard'
+                        : L.current == 'hi'
+                        ? 'कॉल सुरक्षा'
+                        : 'కాల్ గార్డ్'),
+                _InfoChip(
+                    icon: Icons.notifications_active_rounded,
+                    label: L.current == 'en'
+                        ? 'Message Guard'
+                        : L.current == 'hi'
+                        ? 'मैसेज सुरक्षा'
+                        : 'మెసేజ్ గార్డ్'),
+              ],
             ),
-            const SizedBox(height: 24),
-            const _HomeHelplineBanner(),
-            const SizedBox(height: 20),
-            Wrap(spacing: 10, runSpacing: 8, alignment: WrapAlignment.center, children: const [
-              _InfoChip(icon: Icons.phone_android_rounded,        label: 'On-device OCR'),
-              _InfoChip(icon: Icons.lock_rounded,                 label: 'Privacy First'),
-              _InfoChip(icon: Icons.bolt_rounded,                 label: 'AI Powered'),
-              _InfoChip(icon: Icons.offline_bolt_rounded,         label: 'Offline Fallback'),
-              _InfoChip(icon: Icons.phone_in_talk_rounded,        label: 'Call Guard'),
-              _InfoChip(icon: Icons.notifications_active_rounded, label: 'Message Guard'),
-            ]),
           ]),
         ),
       ),
@@ -2347,9 +2779,17 @@ class _HomeHelplineBanner extends StatelessWidget {
         const Icon(Icons.emergency_rounded, color: Colors.redAccent, size: 32),
         const SizedBox(width: 14),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Cybercrime Helpline', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.redAccent)),
+          Text(
+            L.current == 'en' ? 'Cybercrime Helpline'
+                : L.current == 'hi' ? 'साइबर क्राइम हेल्पलाइन'
+                : 'సైబర్ క్రైమ్ హెల్ప్‌లైన్',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.redAccent),
+          ),
           const Text('1930', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 4)),
-          Text('24×7 Free • ఉచితం • cybercrime.gov.in', style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+          Text(
+            L.t('helpline_tag'),
+            style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
+          ),
         ])),
         ElevatedButton(
           style: ElevatedButton.styleFrom(
@@ -2359,7 +2799,7 @@ class _HomeHelplineBanner extends StatelessWidget {
           onPressed: () async {
             try { await launchUrl(Uri.parse('tel:1930')); } catch (_) {}
           },
-          child: const Text('Call\nNow', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+          child: Text(L.t('helpline_call'), textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
         ),
       ]),
     );
@@ -2392,7 +2832,7 @@ class _FloatingButtonToggle extends StatelessWidget {
       Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: enabled ? _C.safe : Colors.grey)),
       const SizedBox(width: 6),
       Text(
-        enabled ? 'Active — floating scan bubble visible' : 'Tap to enable floating scan bubble',
+        enabled ? L.t('float_on_hint') : L.t('float_off_hint'),
         style: TextStyle(fontSize: 11, color: enabled ? _C.safe : Colors.grey),
       ),
     ]),
@@ -2501,9 +2941,7 @@ class _LanguageToggle extends StatelessWidget {
       const SizedBox(height: 5),
       Center(
         child: Text(
-          current == 'te' ? 'ప్రస్తుత భాష: తెలుగు'
-              : current == 'hi' ? 'वर्तमान भाषा: हिंदी'
-              : 'Current language: English',
+          L.t('lang_current'),
           style: TextStyle(fontSize: 11, color: Colors.amber.withOpacity(0.7)),
         ),
       ),
@@ -2573,7 +3011,7 @@ class _CropScreenState extends State<CropScreen> {
     final cropped = await ImageCropper().cropImage(
       sourcePath: _images[i],
       uiSettings: [AndroidUiSettings(
-        toolbarTitle: 'Message area crop చేయండి',
+        toolbarTitle: L.current == 'en' ? 'Crop to message area' : L.current == 'hi' ? 'संदेश area crop करें' : 'Message area crop చేయండి',
         toolbarColor: Colors.black,
         toolbarWidgetColor: Colors.white,
         activeControlsWidgetColor: Colors.blue,
@@ -2594,7 +3032,7 @@ class _CropScreenState extends State<CropScreen> {
   void _remove(int i) {
     if (_images.length == 1) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('కనీసం ఒక image కావాలి.'), duration: Duration(seconds: 2)),
+        SnackBar(content: Text(L.current == 'en' ? 'Need at least one image.' : L.current == 'hi' ? 'कम से कम एक इमेज चाहिए।' : 'కనీసం ఒక image కావాలి.'), duration: const Duration(seconds: 2)),
       );
       return;
     }
@@ -2626,7 +3064,7 @@ class _CropScreenState extends State<CropScreen> {
       );
       if (result == null && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Text కనిపించలేదు. Message area దగ్గరగా crop చేయండి.')),
+          SnackBar(content: Text(L.t('no_text'))),
         );
       }
       if (mounted) _finish();
@@ -2673,13 +3111,17 @@ class _CropScreenState extends State<CropScreen> {
             child: Text(
               _images.length == 1
                   ? L.t('crop_hint_1')
-                  : '💡 ${_images.length} screenshots లోడ్ అయ్యాయి. Crop చేసి Analyze నొక్కండి.',
+                  : L.t('crop_hint_n'),
               style: const TextStyle(fontSize: 12, color: Colors.white70),
               textAlign: TextAlign.center,
             ),
           ),
           Expanded(child: _images.isEmpty
-              ? const Center(child: Text('No images. Back వెళ్ళి try చేయండి.', style: TextStyle(color: Colors.grey)))
+              ? Center(child: Text(
+              L.current == 'en' ? 'No images. Go back and try again.'
+                  : L.current == 'hi' ? 'कोई इमेज नहीं। वापस जाएं।'
+                  : 'No images. Back వెళ్ళి try చేయండి.',
+              style: const TextStyle(color: Colors.grey)))
               : ListView.builder(
             padding: const EdgeInsets.all(12),
             itemCount: _images.length,
@@ -2737,7 +3179,9 @@ class _CropScreenState extends State<CropScreen> {
                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.search_rounded, size: 22),
               label: Text(
-                _analyzing ? (_status.isNotEmpty ? _status : 'Analyzing…') : L.t('analyze_btn'),
+                _analyzing
+                    ? (_status.isNotEmpty ? _status : L.t('status_ai'))
+                    : L.t('analyze_btn'),
                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
               style: ElevatedButton.styleFrom(
@@ -3250,24 +3694,43 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('Scan History (${_history.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Text('${L.t('history_title')} (${_history.length})',
+            style: const TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [
           if (_history.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.delete_outline_rounded),
-              tooltip: 'Clear All',
+              tooltip: L.t('clear_history'),
               onPressed: () async {
                 final ok = await showDialog<bool>(
                   context: context,
                   builder: (_) => AlertDialog(
-                    title: const Text('History Delete చేయాలా?'),
-                    content: const Text('అన్ని scan records permanently delete అవుతాయి.'),
+                    title: Text(L.t('clear_history')),
+                    content: Text(
+                      L.current == 'en'
+                          ? 'All scan records will be permanently deleted.'
+                          : L.current == 'hi'
+                          ? 'सभी scan records हमेशा के लिए मिट जाएंगे।'
+                          : 'అన్ని scan records permanently delete అవుతాయి.',
+                    ),
                     actions: [
-                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: Text(
+                          L.current == 'en' ? 'Cancel'
+                              : L.current == 'hi' ? 'रद्द करें'
+                              : 'రద్దు',
+                        ),
+                      ),
                       TextButton(
                         onPressed: () => Navigator.pop(context, true),
-                        child: const Text('Delete All', style: TextStyle(color: Colors.red)),
+                        child: Text(
+                          L.current == 'en' ? 'Delete All'
+                              : L.current == 'hi' ? 'सब मिटाएं'
+                              : 'అన్నీ తొలగించు',
+                          style: const TextStyle(color: Colors.red),
+                        ),
                       ),
                     ],
                   ),
@@ -3301,7 +3764,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
               const Icon(Icons.warning_rounded, color: Colors.red, size: 18),
               const SizedBox(width: 8),
               Text(
-                '$highCount అధిక ప్రమాదం / high-risk message${highCount > 1 ? "s" : ""}',
+                L.current == 'en'
+                    ? '$highCount high-risk message${highCount > 1 ? "s" : ""} detected'
+                    : L.current == 'hi'
+                    ? '$highCount high-risk message${highCount > 1 ? "s" : ""} मिले'
+                    : '$highCount అధిక ప్రమాద message${highCount > 1 ? "s" : ""} గుర్తించబడ్డాయి',
                 style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 13),
               ),
             ]),
@@ -3356,7 +3823,7 @@ class _HistoryCard extends StatelessWidget {
     final title = result.riskLevel == RiskLevel.highRisk
         ? '🚨 Scam!'
         : result.riskLevel == RiskLevel.suspicious
-        ? '⚠️ అనుమానాస్పద'
+        ? L.t('susp_found').replaceAll('⚠️ ', '⚠️ ')
         : '✅ Safe';
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
@@ -3545,7 +4012,7 @@ The user has spoken to you in their regional language and described a situation 
 Your job:
 1. Understand whether the situation involves a scam, suspicious activity, or is safe.
 2. Give clear, simple, actionable advice — what the user should do RIGHT NOW.
-3. Keep your answer SHORT (3-5 sentences max). Speak like a trusted friend, not a robot.
+3. Keep your answer SHORT (5-10 sentences max). Speak like a trusted friend, not a robot.
 4. ALWAYS respond in $langHint — match the language the user spoke.
 5. End with the cybercrime helpline number 1930 if the situation is risky.
 ''';

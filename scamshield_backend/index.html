@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Spam Shield</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=IBM+Plex+Mono:wght@300;400;600&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --bg:       #03050e;
+    --surface:  #080d1a;
+    --border:   #111827;
+    --border2:  #1f2937;
+    --text:     #e2e8f0;
+    --muted:    #4b5563;
+    --dim:      #1f2937;
+    --blue:     #3b82f6;
+    --purple:   #8b5cf6;
+    --green:    #22c55e;
+    --yellow:   #f59e0b;
+    --red:      #ef4444;
+    --orange:   #f97316;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Grid bg ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 40px 40px;
+    opacity: 0.4;
+    pointer-events: none;
+  }
+
+  .wrap {
+    position: relative; z-index: 1;
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 48px 20px 80px;
+  }
+
+  /* ── Header ── */
+  .header { text-align: center; margin-bottom: 40px; }
+  .badge {
+    display: inline-block;
+    background: #0d1b35;
+    border: 1px solid #1d3461;
+    color: var(--blue);
+    font-size: 10px;
+    letter-spacing: 3px;
+    padding: 4px 14px;
+    border-radius: 99px;
+    margin-bottom: 16px;
+  }
+  h1 {
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(36px, 8vw, 64px);
+    font-weight: 800;
+    background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 50%, #f472b6 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+  .subtitle {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 1px;
+  }
+
+  /* ── Card ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 16px;
+  }
+
+  /* ── Textarea ── */
+  .input-label {
+    font-size: 10px;
+    letter-spacing: 3px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  textarea {
+    width: 100%;
+    background: #0a0f1e;
+    border: 1px solid var(--dim);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    padding: 14px;
+    resize: none;
+    transition: border-color 0.2s;
+    outline: none;
+  }
+  textarea:focus { border-color: var(--blue); }
+
+  .input-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .char-count { font-size: 11px; color: var(--muted); }
+
+  .btn-row { display: flex; gap: 8px; }
+  .btn {
+    border: none; border-radius: 8px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 1px;
+    padding: 9px 20px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn:hover { transform: translateY(-1px); opacity: .88; }
+  .btn:active { transform: translateY(0); }
+  .btn-ghost {
+    background: transparent;
+    border: 1px solid var(--dim);
+    color: var(--muted);
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--blue), var(--purple));
+    color: #fff;
+    min-width: 120px;
+  }
+  .btn-primary:disabled {
+    background: var(--dim); color: var(--muted); cursor: not-allowed;
+    transform: none; opacity: 1;
+  }
+
+  /* ── Samples ── */
+  .section-label {
+    font-size: 10px; letter-spacing: 3px;
+    color: var(--muted); margin-bottom: 10px;
+  }
+  .samples { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 24px; }
+  .sample-btn {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    color: #64748b;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    padding: 5px 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .sample-btn:hover { border-color: var(--blue); color: var(--blue); background: #0d1b35; }
+
+  /* ── Spinner ── */
+  .spinner-wrap {
+    text-align: center; padding: 48px;
+    display: none;
+  }
+  .spinner-wrap.show { display: block; }
+  .spinner {
+    width: 36px; height: 36px;
+    border: 2px solid var(--dim);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin: 0 auto 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner-text { font-size: 11px; color: var(--muted); letter-spacing: 2px; }
+
+  /* ── Result ── */
+  .result-wrap { display: none; }
+  .result-wrap.show { display: block; animation: slideUp 0.4s ease; }
+  @keyframes slideUp { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
+
+  /* Risk banner */
+  .risk-banner {
+    border-radius: 14px;
+    padding: 22px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    margin-bottom: 14px;
+  }
+  .risk-icon { font-size: 36px; flex-shrink: 0; }
+  .risk-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 26px; font-weight: 800;
+  }
+  .risk-sub { font-size: 12px; color: #64748b; margin-top: 3px; }
+  .risk-sub span { font-weight: 600; }
+  .risk-dial {
+    margin-left: auto; flex-shrink: 0;
+    width: 68px; height: 68px;
+    border-radius: 50%;
+    border-width: 3px; border-style: solid;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+  }
+  .risk-dial .dial-val { font-size: 18px; font-weight: 700; line-height: 1; }
+  .risk-dial .dial-lbl { font-size: 9px; letter-spacing: 1px; margin-top: 2px; }
+
+  /* Score grid */
+  .score-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  @media(max-width:500px) { .score-grid { grid-template-columns: 1fr; } }
+
+  .score-card-title {
+    font-size: 10px; letter-spacing: 3px;
+    color: var(--muted); margin-bottom: 14px;
+  }
+
+  /* Score bar */
+  .bar-row { margin-bottom: 10px; }
+  .bar-meta {
+    display: flex; justify-content: space-between;
+    font-size: 10px; color: var(--muted); margin-bottom: 4px;
+  }
+  .bar-track {
+    background: #0a0f1e;
+    border-radius: 4px; height: 6px; overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%; border-radius: 4px;
+    transition: width 0.7s cubic-bezier(.4,0,.2,1);
+  }
+
+  /* Keywords */
+  .kw-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .kw-tag {
+    background: #1c0505;
+    border: 1px solid #7f1d1d;
+    border-radius: 4px;
+    color: #fca5a5;
+    font-size: 11px; font-weight: 600;
+    padding: 3px 10px;
+  }
+  .no-kw { font-size: 12px; color: var(--muted); }
+
+  /* Formula */
+  .formula {
+    background: #0a0f1e;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 14px;
+  }
+
+  /* History */
+  .history-wrap { margin-top: 28px; }
+  .history-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 6px;
+    display: flex; align-items: center; gap: 10px;
+    cursor: pointer; transition: border-color 0.15s;
+  }
+  .history-item:hover { border-color: var(--blue); }
+  .history-text {
+    flex: 1; font-size: 12px; color: #64748b;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .history-score { font-size: 11px; font-weight: 600; white-space: nowrap; }
+
+  /* Error */
+  .error-box {
+    background: #1c0505; border: 1px solid #7f1d1d;
+    border-radius: 10px; padding: 16px; color: #fca5a5;
+    font-size: 12px; display: none;
+  }
+  .error-box.show { display: block; }
+
+  /* Status dot */
+  .status-bar {
+    text-align: center; margin-bottom: 28px;
+    font-size: 11px; color: var(--muted); letter-spacing: 1px;
+  }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+  .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+  .dot.red   { background: var(--red); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="badge">AI-POWERED · HYBRID DETECTION</div>
+    <h1>SPAM SHIELD</h1>
+    <p class="subtitle">mrm8488/bert-tiny-finetuned-sms-spam-detection · FastAPI · localhost:8000</p>
+  </div>
+
+  <!-- Server status -->
+  <div class="status-bar">
+    <span class="dot" id="statusDot"></span>
+    <span id="statusText">Checking server...</span>
+  </div>
+
+  <!-- Input card -->
+  <div class="card">
+    <div class="input-label">PASTE YOUR SMS MESSAGE</div>
+    <textarea id="msgInput" rows="5" placeholder="Type or paste any SMS message here..."></textarea>
+    <div class="input-footer">
+      <span class="char-count"><span id="charCount">0</span> characters</span>
+      <div class="btn-row">
+        <button class="btn btn-ghost" onclick="clearAll()">CLEAR</button>
+        <button class="btn btn-primary" id="analyseBtn" onclick="analyse()" disabled>ANALYSE →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sample buttons -->
+  <div class="section-label">SAMPLE MESSAGES</div>
+  <div class="samples" id="samples"></div>
+
+  <!-- Error -->
+  <div class="error-box" id="errorBox"></div>
+
+  <!-- Spinner -->
+  <div class="spinner-wrap" id="spinner">
+    <div class="spinner"></div>
+    <div class="spinner-text">RUNNING AI MODEL...</div>
+  </div>
+
+  <!-- Result -->
+  <div class="result-wrap" id="result"></div>
+
+  <!-- History -->
+  <div id="historyWrap"></div>
+
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+const history = [];
+
+const SAMPLES = [
+  { label: '🚨 Prize Scam',   text: "Congratulations! You've WON a lottery prize of ₹50,000! Click here to claim now: http://prize-win.in" },
+  { label: '🚨 KYC Fraud',    text: "URGENT: Your bank account is blocked. Update your KYC immediately or your UPI will be disabled. Call 9876543210." },
+  { label: '🚨 OTP Phishing', text: "Your OTP is 847291. Verify your account at www.sbi-verify.com/confirm to avoid suspension." },
+  { label: '✅ Jio SMS',      text: "Dear Customer, +918919897741 is now available to take calls. Jio." },
+  { label: '✅ Friend Text',  text: "Hey! Are we still meeting for lunch tomorrow at 1pm?" },
+  { label: '✅ Office Note',  text: "Team meeting rescheduled to 4pm today. Conference Room B." },
+];
+
+// ── Render samples ──────────────────────────────────────
+const samplesEl = document.getElementById('samples');
+SAMPLES.forEach(s => {
+  const b = document.createElement('button');
+  b.className = 'sample-btn';
+  b.textContent = s.label;
+  b.onclick = () => { document.getElementById('msgInput').value = s.text; updateChar(); analyse(); };
+  samplesEl.appendChild(b);
+});
+
+// ── Char counter ────────────────────────────────────────
+const input = document.getElementById('msgInput');
+input.addEventListener('input', updateChar);
+function updateChar() {
+  const v = input.value.trim();
+  document.getElementById('charCount').textContent = input.value.length;
+  document.getElementById('analyseBtn').disabled = v.length === 0;
+}
+
+// ── Health check ────────────────────────────────────────
+async function checkServer() {
+  try {
+    const r = await fetch(`${API}/health`);
+    if (r.ok) {
+      document.getElementById('statusDot').className = 'dot green';
+      document.getElementById('statusText').textContent = 'Server online · Ready to analyse';
+      document.getElementById('analyseBtn').disabled = input.value.trim().length === 0;
+    } else { throw new Error(); }
+  } catch {
+    document.getElementById('statusDot').className = 'dot red';
+    document.getElementById('statusText').textContent = 'Server offline · Run: uvicorn main:app --reload --port 8000';
+  }
+}
+checkServer();
+
+// ── Clear ────────────────────────────────────────────────
+function clearAll() {
+  input.value = '';
+  updateChar();
+  document.getElementById('result').className = 'result-wrap';
+  document.getElementById('errorBox').className = 'error-box';
+}
+
+// ── Analyse ──────────────────────────────────────────────
+async function analyse() {
+  const text = input.value.trim();
+  if (!text) return;
+
+  document.getElementById('spinner').className = 'spinner-wrap show';
+  document.getElementById('result').className = 'result-wrap';
+  document.getElementById('errorBox').className = 'error-box';
+
+  try {
+    const res = await fetch(`${API}/detect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error(`Server error: ${res.status}`);
+    const data = await res.json();
+
+    document.getElementById('spinner').className = 'spinner-wrap';
+    renderResult(data, text);
+
+    history.unshift({ data, text });
+    if (history.length > 5) history.pop();
+    renderHistory();
+  } catch (e) {
+    document.getElementById('spinner').className = 'spinner-wrap';
+    const eb = document.getElementById('errorBox');
+    eb.className = 'error-box show';
+    eb.textContent = `⚠ ${e.message}. Make sure FastAPI server is running on port 8000.`;
+  }
+}
+
+// ── Render result ────────────────────────────────────────
+function renderResult(d, text) {
+  const cfgMap = {
+    HIGH:   { color: '#ef4444', bg: 'linear-gradient(135deg,#1c0505,#2a0808)', border: '#7f1d1d', icon: '🔴' },
+    MEDIUM: { color: '#f59e0b', bg: 'linear-gradient(135deg,#1c0e00,#2a1500)', border: '#92400e', icon: '🟡' },
+    LOW:    { color: '#22c55e', bg: 'linear-gradient(135deg,#001c08,#002a10)', border: '#166534', icon: '🟢' },
+  };
+  const c = cfgMap[d.risk];
+  const pct = v => (v * 100).toFixed(1);
+
+  const bar = (label, val, color) => `
+    <div class="bar-row">
+      <div class="bar-meta"><span>${label}</span><span>${pct(val)}%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct(val)}%;background:${color}"></div></div>
+    </div>`;
+
+  const kwHtml = d.matched_keywords.length
+    ? d.matched_keywords.map(k => `<span class="kw-tag">⚠ ${k}</span>`).join('')
+    : '<span class="no-kw">No suspicious keywords detected</span>';
+
+  document.getElementById('result').innerHTML = `
+    <!-- Risk Banner -->
+    <div class="risk-banner" style="background:${c.bg};border:1px solid ${c.border}">
+      <div class="risk-icon">${c.icon}</div>
+      <div>
+        <div class="risk-title" style="color:${c.color}">${d.risk_label}</div>
+        <div class="risk-sub">
+          Risk: <span style="color:${c.color}">${d.risk}</span> &nbsp;·&nbsp;
+          Score: <span style="color:#e2e8f0">${pct(d.final_score)}%</span> &nbsp;·&nbsp;
+          ${d.message_length} chars
+        </div>
+      </div>
+      <div class="risk-dial" style="border-color:${c.color};background:${c.color}18">
+        <div class="dial-val" style="color:${c.color}">${Math.round(d.final_score*100)}</div>
+        <div class="dial-lbl" style="color:${c.color}">RISK</div>
+      </div>
+    </div>
+
+    <!-- Score Grid -->
+    <div class="score-grid">
+      <div class="card" style="margin:0;padding:18px">
+        <div class="score-card-title">🤖 AI MODEL OUTPUT</div>
+        ${bar('Spam Probability', d.ai_score, '#8b5cf6')}
+        ${bar('Ham Probability',  1 - d.ai_score, '#22c55e')}
+      </div>
+      <div class="card" style="margin:0;padding:18px">
+        <div class="score-card-title">🔍 PATTERN SIGNALS</div>
+        ${bar('Keywords',  d.keyword_score,  '#f59e0b')}
+        ${bar('URLs',      d.url_score,      '#ef4444')}
+        ${bar('Phone No.', d.phone_score,    '#f97316')}
+        ${bar('Urgency',   d.urgency_score,  '#a78bfa')}
+      </div>
+    </div>
+
+    <!-- Keywords -->
+    <div class="card" style="padding:18px">
+      <div class="score-card-title">🏷 FLAGGED KEYWORDS</div>
+      <div class="kw-list">${kwHtml}</div>
+    </div>
+
+    <!-- Formula -->
+    <div class="formula">
+      Final&nbsp;=&nbsp;(0.65&nbsp;×&nbsp;AI[${pct(d.ai_score)}%])&nbsp;+&nbsp;(0.35&nbsp;×&nbsp;Pattern[${pct(d.pattern_score)}%])
+      &nbsp;=&nbsp;<span style="color:${c.color};font-weight:700">${pct(d.final_score)}%</span>
+    </div>
+  `;
+  document.getElementById('result').className = 'result-wrap show';
+}
+
+// ── Render history ───────────────────────────────────────
+function renderHistory() {
+  const hw = document.getElementById('historyWrap');
+  if (history.length < 2) { hw.innerHTML = ''; return; }
+  const colorMap = { HIGH:'#ef4444', MEDIUM:'#f59e0b', LOW:'#22c55e' };
+  const iconMap  = { HIGH:'🔴', MEDIUM:'🟡', LOW:'🟢' };
+
+  hw.innerHTML = `<div class="history-wrap">
+    <div class="section-label">RECENT ANALYSES</div>
+    ${history.slice(1).map(h => `
+      <div class="history-item" onclick="showHistory(${history.indexOf(h)})">
+        <span>${iconMap[h.data.risk]}</span>
+        <span class="history-text">${h.text.slice(0, 70)}${h.text.length > 70 ? '…' : ''}</span>
+        <span class="history-score" style="color:${colorMap[h.data.risk]}">${(h.data.final_score*100).toFixed(0)}%</span>
+      </div>`).join('')}
+  </div>`;
+}
+
+function showHistory(i) {
+  const h = history[i];
+  input.value = h.text;
+  updateChar();
+  renderResult(h.data, h.text);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+</script>
+</body>
+</html>
